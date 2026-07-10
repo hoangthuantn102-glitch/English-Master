@@ -1,0 +1,6 @@
+{
+  "name": "English Master",
+  "description": "Ứng dụng học từ vựng tiếng Anh đỉnh cao tích hợp AI, Spaced Repetition và 10 trò chơi gamification sinh động để nhớ từ vựng vĩnh viễn.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
