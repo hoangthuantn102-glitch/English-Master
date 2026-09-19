@@ -126,6 +126,13 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    enum class GameType {
+        NONE, PAIRING, MULTIPLE_CHOICE, LISTENING, FILL_BLANKS, WORD_SCRAMBLE, SPEED_QUIZ, MEMORY, HANGMAN, QUIZ_CHALLENGE, RACE, PRONUNCIATION
+    }
+    
+    private val _lastPlayedGameType = MutableStateFlow(GameType.NONE)
+    val lastPlayedGameType = _lastPlayedGameType.asStateFlow()
+
     sealed interface GameState {
         object Menu : GameState
         object PairingGame : GameState
@@ -152,6 +159,23 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
         _earnedCoins.value = 0
     }
 
+    fun restartLastGame() {
+        when (_lastPlayedGameType.value) {
+            GameType.PAIRING -> startPairingGame()
+            GameType.MULTIPLE_CHOICE -> startMultipleChoiceGame(isListening = false)
+            GameType.LISTENING -> startMultipleChoiceGame(isListening = true)
+            GameType.FILL_BLANKS -> startFillOrScrambleGame(isScramble = false)
+            GameType.WORD_SCRAMBLE -> startFillOrScrambleGame(isScramble = true)
+            GameType.SPEED_QUIZ -> startSpeedQuizGame(30)
+            GameType.MEMORY -> startMemoryCardsGame()
+            GameType.HANGMAN -> startHangmanGame()
+            GameType.QUIZ_CHALLENGE -> startQuizChallenge()
+            GameType.RACE -> startRaceGame()
+            GameType.PRONUNCIATION -> startPronunciationGame()
+            GameType.NONE -> backToMenu()
+        }
+    }
+
     private fun checkEnoughWords(required: Int = 4): Boolean {
         return _words.value.size >= required
     }
@@ -171,26 +195,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
 
         viewModelScope.launch {
             val profile = userProfile.value
-            var newXp = profile.xp + xpReward
-            var newCoins = profile.coins + coinsReward
-            var newLevel = profile.level
-            
-            val targetLevel = (newXp / 100) + 1
-            if (targetLevel > newLevel) {
-                newLevel = targetLevel
-                newCoins += 20 // Level up bonus
-            }
+            val newXp = profile.xp + xpReward
+            val newCoins = profile.coins + coinsReward
 
             repository.saveUserProfile(profile.copy(
                 xp = newXp,
-                coins = newCoins,
-                level = newLevel
+                coins = newCoins
             ))
         }
     }
 
     // --- GAME 1: TAP TO PAIR / MATCHING ---
     fun startPairingGame() {
+        _lastPlayedGameType.value = GameType.PAIRING
         if (!checkEnoughWords(4)) {
             _currentGameState.value = GameState.GameOver("Thiếu Từ Vựng", "Hãy thêm ít nhất 4 từ vựng để bắt đầu chơi trò này nhé!")
             return
@@ -235,6 +252,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
 
     // --- GAME 2 & 3: MULTIPLE CHOICE & LISTENING ---
     fun startMultipleChoiceGame(isListening: Boolean = false) {
+        _lastPlayedGameType.value = if (isListening) GameType.LISTENING else GameType.MULTIPLE_CHOICE
         if (!checkEnoughWords(4)) {
             _currentGameState.value = GameState.GameOver("Thiếu Từ Vựng", "Vui lòng thêm ít nhất 4 từ vựng!")
             return
@@ -280,6 +298,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
 
     // --- GAME 4 & 5: FILL IN BLANKS & WORD SCRAMBLE ---
     fun startFillOrScrambleGame(isScramble: Boolean) {
+        _lastPlayedGameType.value = if (isScramble) GameType.WORD_SCRAMBLE else GameType.FILL_BLANKS
         if (!checkEnoughWords(1)) {
             _currentGameState.value = GameState.GameOver("Thiếu Từ Vựng", "Vui lòng thêm từ vựng để học!")
             return
@@ -295,9 +314,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
             _scrambledLettersOrBlanks.value = letters.joinToString(" ")
             _currentGameState.value = GameState.WordScrambleGame
         } else {
-            // Fill in blanks: mask odd letters or 50% letters
-            val masked = randomWord.word.mapIndexed { idx, char ->
-                if (idx % 2 == 1 && char.isLetter()) '_' else char
+            // Fill in blanks: mask a consecutive cluster of letters
+            val word = randomWord.word
+            val maskCount = when {
+                word.length <= 3 -> 1
+                word.length <= 5 -> 2
+                word.length <= 8 -> 3
+                else -> 4
+            }
+            val startIndex = if (word.length > maskCount) (0..word.length - maskCount).random() else 0
+            
+            val masked = word.mapIndexed { idx, char ->
+                if (idx in startIndex until (startIndex + maskCount) && char.isLetter()) '_' else char
             }.joinToString("")
             _scrambledLettersOrBlanks.value = masked
             _currentGameState.value = GameState.FillBlanksGame
@@ -323,6 +351,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
 
     // --- GAME 6: SPEED QUIZ (TIME ATTACK) ---
     fun startSpeedQuizGame(seconds: Int) {
+        _lastPlayedGameType.value = GameType.SPEED_QUIZ
         if (!checkEnoughWords(4)) {
             _currentGameState.value = GameState.GameOver("Thiếu Từ Vựng", "Vui lòng thêm từ vựng!")
             return
@@ -379,6 +408,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
 
     // --- GAME 7: MEMORY CARDS ---
     fun startMemoryCardsGame() {
+        _lastPlayedGameType.value = GameType.MEMORY
         if (!checkEnoughWords(4)) {
             _currentGameState.value = GameState.GameOver("Thiếu Từ Vựng", "Hãy thêm ít nhất 4 từ vựng!")
             return
@@ -433,6 +463,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
 
     // --- GAME 8: HANGMAN ---
     fun startHangmanGame() {
+        _lastPlayedGameType.value = GameType.HANGMAN
         if (!checkEnoughWords(1)) {
             _currentGameState.value = GameState.GameOver("Thiếu Từ Vựng", "Vui lòng thêm từ vựng!")
             return
@@ -471,6 +502,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
 
     // --- GAME 9: QUIZ CHALLENGE (20 QUESTIONS) ---
     fun startQuizChallenge() {
+        _lastPlayedGameType.value = GameType.QUIZ_CHALLENGE
         if (!checkEnoughWords(4)) {
             _currentGameState.value = GameState.GameOver("Thiếu Từ Vựng", "Vui lòng thêm ít nhất 4 từ vựng!")
             return
@@ -510,6 +542,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
 
     // --- GAME 10: VOCABULARY RACE ---
     fun startRaceGame() {
+        _lastPlayedGameType.value = GameType.RACE
         _currentGameState.value = GameState.RaceGame
     }
 
@@ -534,6 +567,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
 
     // --- GAME 11: PRONUNCIATION CHALLENGE ---
     fun startPronunciationGame() {
+        _lastPlayedGameType.value = GameType.PRONUNCIATION
         if (!checkEnoughWords(1)) {
             _currentGameState.value = GameState.GameOver("Thiếu Từ Vựng", "Vui lòng thêm ít nhất 1 từ vựng để bắt đầu luyện phát âm!")
             return

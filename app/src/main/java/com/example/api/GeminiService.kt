@@ -3,6 +3,8 @@ package com.example.api
 import com.example.BuildConfig
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -17,6 +19,7 @@ import java.util.concurrent.TimeUnit
 // Models for Gemini REST API
 data class GeminiRequest(
     val contents: List<Content>,
+    val systemInstruction: Content? = null,
     val generationConfig: GenerationConfig? = null
 )
 
@@ -31,7 +34,8 @@ data class Part(
 
 data class GenerationConfig(
     val responseMimeType: String? = null,
-    val temperature: Float? = null
+    val temperature: Float? = null,
+    val maxOutputTokens: Int? = null
 )
 
 object GeminiClient {
@@ -52,6 +56,18 @@ object GeminiClient {
         .build()
 
     interface GeminiApi {
+        @POST("v1beta/models/gemini-3.1-flash-lite-preview:generateContent")
+        suspend fun generateLiteContent(
+            @Query("key") apiKey: String,
+            @Body request: GeminiRequest
+        ): ResponseBody
+
+        @POST("v1beta/models/gemini-flash-latest:generateContent")
+        suspend fun generateFlashLatestContent(
+            @Query("key") apiKey: String,
+            @Body request: GeminiRequest
+        ): ResponseBody
+
         @POST("v1beta/models/gemini-3.5-flash:generateContent")
         suspend fun generateContent(
             @Query("key") apiKey: String,
@@ -64,10 +80,10 @@ object GeminiClient {
     }
 
     // Helper to call Gemini API
-    suspend fun getGeminiResponse(prompt: String, customApiKey: String? = null, jsonMode: Boolean = false): String {
+    suspend fun getGeminiResponse(prompt: String, customApiKey: String? = null, jsonMode: Boolean = false): String = withContext(Dispatchers.IO) {
         val apiKey = if (!customApiKey.isNullOrEmpty()) customApiKey else BuildConfig.GEMINI_API_KEY
         if (apiKey.isEmpty() || apiKey == "MY_GEMINI_API_KEY") {
-            return "API_KEY_MISSING"
+            return@withContext "API_KEY_MISSING"
         }
 
         val request = GeminiRequest(
@@ -77,7 +93,7 @@ object GeminiClient {
             generationConfig = if (jsonMode) GenerationConfig(responseMimeType = "application/json") else null
         )
 
-        return try {
+        try {
             val responseBody = service.generateContent(apiKey, request)
             val jsonString = responseBody.string()
             
@@ -91,17 +107,98 @@ object GeminiClient {
         }
     }
 
-    // Helper for custom API Key Chat conversations with message history
-    suspend fun getGeminiChatResponse(history: List<Content>, customApiKey: String): String {
+    // Helper for custom API Key Chat conversations with message history (accelerated & detailed)
+    suspend fun getGeminiChatResponse(
+        history: List<Content>,
+        customApiKey: String,
+        systemInstruction: Content? = null
+    ): String = withContext(Dispatchers.IO) {
         if (customApiKey.isEmpty()) {
-            return "API_KEY_MISSING"
+            return@withContext "API_KEY_MISSING"
         }
 
         val request = GeminiRequest(
-            contents = history
+            contents = history,
+            systemInstruction = systemInstruction,
+            generationConfig = GenerationConfig(
+                temperature = 0.2f,
+                maxOutputTokens = 1600
+            )
         )
 
-        return try {
+        // 1. First prioritize gemini-3.1-flash-lite-preview for ultra-fast response speed
+        try {
+            val responseBody = service.generateLiteContent(customApiKey, request)
+            val jsonString = responseBody.string()
+            val candidateText = parseCandidateText(jsonString)
+            if (candidateText != null) return@withContext candidateText
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // 2. Second try gemini-flash-latest if lite is busy
+        try {
+            val responseBody = service.generateFlashLatestContent(customApiKey, request)
+            val jsonString = responseBody.string()
+            val candidateText = parseCandidateText(jsonString)
+            if (candidateText != null) return@withContext candidateText
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // 3. Fallback to standard 3.5-flash
+        try {
+            val responseBody = service.generateContent(customApiKey, request)
+            val jsonString = responseBody.string()
+            val candidateText = parseCandidateText(jsonString)
+            candidateText ?: "No response from Gemini"
+        } catch (e: Exception) {
+            e.printStackTrace()
+            "ERROR: ${e.localizedMessage ?: "Unknown error occurred"}"
+        }
+    }
+
+    // Ultra-fast helper optimized specifically for real-time voice & oral communication room
+    suspend fun getGeminiFastChatResponse(
+        history: List<Content>,
+        customApiKey: String,
+        systemInstruction: Content? = null
+    ): String = withContext(Dispatchers.IO) {
+        if (customApiKey.isEmpty()) {
+            return@withContext "API_KEY_MISSING"
+        }
+
+        val request = GeminiRequest(
+            contents = history,
+            systemInstruction = systemInstruction,
+            generationConfig = GenerationConfig(
+                temperature = 0.4f,
+                maxOutputTokens = 85
+            )
+        )
+
+        try {
+            // First try the ultra-fast lite model for near-instant conversational latency
+            val responseBody = service.generateLiteContent(customApiKey, request)
+            val jsonString = responseBody.string()
+            val candidateText = parseCandidateText(jsonString)
+            if (candidateText != null) return@withContext candidateText
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        try {
+            // Second try gemini-flash-latest if lite is temporarily unavailable
+            val responseBody = service.generateFlashLatestContent(customApiKey, request)
+            val jsonString = responseBody.string()
+            val candidateText = parseCandidateText(jsonString)
+            if (candidateText != null) return@withContext candidateText
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        // Fallback to standard 3.5-flash
+        try {
             val responseBody = service.generateContent(customApiKey, request)
             val jsonString = responseBody.string()
             val candidateText = parseCandidateText(jsonString)
@@ -113,10 +210,30 @@ object GeminiClient {
     }
 
     private fun parseCandidateText(json: String): String? {
+        // First try standard JSONObject parsing for complete unicode, escape, and multi-part support
         try {
-            // Since we don't want to define complete complex nested structure classes that can break with API changes,
-            // we can parse candidate text using standard simple JSON scanning or direct String manipulation.
-            // Let's use direct String scanning to extract the first candidate "text" field, which is extremely robust!
+            val jsonObject = org.json.JSONObject(json)
+            val candidates = jsonObject.optJSONArray("candidates")
+            if (candidates != null && candidates.length() > 0) {
+                val firstCandidate = candidates.getJSONObject(0)
+                val content = firstCandidate.optJSONObject("content")
+                val parts = content?.optJSONArray("parts")
+                if (parts != null && parts.length() > 0) {
+                    val sb = StringBuilder()
+                    for (i in 0 until parts.length()) {
+                        val part = parts.getJSONObject(i)
+                        sb.append(part.optString("text", ""))
+                    }
+                    val res = sb.toString().trim()
+                    if (res.isNotEmpty()) return res
+                }
+            }
+        } catch (e: Exception) {
+            // Fallback to manual string scanning if needed
+        }
+
+        try {
+            // Fallback manual scanning
             val textToken = "\"text\":"
             var index = json.indexOf(textToken)
             if (index == -1) return null
