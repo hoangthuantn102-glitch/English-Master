@@ -127,7 +127,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     enum class GameType {
-        NONE, PAIRING, MULTIPLE_CHOICE, LISTENING, FILL_BLANKS, WORD_SCRAMBLE, SPEED_QUIZ, MEMORY, HANGMAN, QUIZ_CHALLENGE, RACE, PRONUNCIATION
+        NONE, PAIRING, MULTIPLE_CHOICE, LISTENING, FILL_BLANKS, WORD_SCRAMBLE, SPEED_QUIZ, MEMORY, HANGMAN, QUIZ_CHALLENGE, RACE, PRONUNCIATION, BLUETOOTH_DUEL
     }
     
     private val _lastPlayedGameType = MutableStateFlow(GameType.NONE)
@@ -146,6 +146,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
         object QuizChallengeGame : GameState
         object RaceGame : GameState
         object PronunciationGame : GameState
+        object BluetoothDuelGame : GameState
         data class GameOver(val title: String, val message: String) : GameState
     }
 
@@ -172,8 +173,14 @@ class GameViewModel(application: Application) : AndroidViewModel(application), T
             GameType.QUIZ_CHALLENGE -> startQuizChallenge()
             GameType.RACE -> startRaceGame()
             GameType.PRONUNCIATION -> startPronunciationGame()
+            GameType.BLUETOOTH_DUEL -> startBluetoothDuelGame()
             GameType.NONE -> backToMenu()
         }
+    }
+
+    fun startBluetoothDuelGame() {
+        _lastPlayedGameType.value = GameType.BLUETOOTH_DUEL
+        _currentGameState.value = GameState.BluetoothDuelGame
     }
 
     private fun checkEnoughWords(required: Int = 4): Boolean {

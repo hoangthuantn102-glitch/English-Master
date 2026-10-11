@@ -58,6 +58,8 @@ import com.example.data.GrammarTopic
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.GameViewModel
 import com.example.ui.viewmodel.WordViewModel
+import com.example.ui.viewmodel.BluetoothDuelViewModel
+import com.example.ui.game.BluetoothDuelLayout
 import com.example.ui.viewmodel.ImportResult
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -91,6 +93,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainContainer(wordViewModel: WordViewModel) {
     val gameViewModel: GameViewModel = viewModel()
+    val bluetoothDuelViewModel: BluetoothDuelViewModel = viewModel()
     val userProfile by wordViewModel.userProfile.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -102,6 +105,7 @@ fun MainContainer(wordViewModel: WordViewModel) {
         bottomBar = {
             BottomNavigationBar(currentTab = currentTab, onTabSelected = { 
                 currentTab = it 
+                bluetoothDuelViewModel.exitDuel()
                 gameViewModel.backToMenu() // Reset active game state if they leave
             })
         }
@@ -127,11 +131,18 @@ fun MainContainer(wordViewModel: WordViewModel) {
                             wordViewModel = wordViewModel,
                             onStartSession = { showFlashcardsSession = true },
                             onPracticeGames = { currentTab = "games" },
+                            onStartBluetoothDuel = {
+                                currentTab = "games"
+                                gameViewModel.startBluetoothDuelGame()
+                            },
                             onNavigateToCommunication = { currentTab = "communication" }
                         )
                         "words" -> WordsScreen(wordViewModel = wordViewModel)
                         "grammar" -> GrammarScreen(wordViewModel = wordViewModel)
-                        "games" -> GamesScreen(gameViewModel = gameViewModel)
+                        "games" -> GamesScreen(
+                            gameViewModel = gameViewModel,
+                            bluetoothDuelViewModel = bluetoothDuelViewModel
+                        )
                         "ai" -> ChatAiScreen(
                             wordViewModel = wordViewModel,
                             onNavigateToSettings = { currentTab = "settings" }
@@ -218,6 +229,7 @@ fun HomeScreen(
     wordViewModel: WordViewModel,
     onStartSession: () -> Unit,
     onPracticeGames: () -> Unit,
+    onStartBluetoothDuel: () -> Unit,
     onNavigateToCommunication: () -> Unit
 ) {
     val userProfile by wordViewModel.userProfile.collectAsStateWithLifecycle()
@@ -477,6 +489,26 @@ fun HomeScreen(
                     ) {
                         Text("Luyện tập qua Trò chơi ", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         Text("🎮", fontSize = 16.sp)
+                    }
+                }
+
+                Button(
+                    onClick = onStartBluetoothDuel,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary
+                    )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Đấu 1v1 Bluetooth (Kịch tính) ", fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onTertiary)
+                        Text("⚔️🔥", fontSize = 16.sp)
                     }
                 }
 
@@ -1708,14 +1740,28 @@ fun FlashcardsSessionDialog(
     }
 }
 
-// --- GAMES SCREEN (10 fully interactive games inside a single elegant dashboard!) ---
+// --- GAMES SCREEN (10+ fully interactive games inside a single elegant dashboard!) ---
 @Composable
-fun GamesScreen(gameViewModel: GameViewModel) {
+fun GamesScreen(
+    gameViewModel: GameViewModel,
+    bluetoothDuelViewModel: BluetoothDuelViewModel = viewModel()
+) {
     val gameState by gameViewModel.currentGameState.collectAsStateWithLifecycle()
     val score by gameViewModel.score.collectAsStateWithLifecycle()
     val earnedXp by gameViewModel.earnedXp.collectAsStateWithLifecycle()
     val earnedCoins by gameViewModel.earnedCoins.collectAsStateWithLifecycle()
     val timeLeft by gameViewModel.timeLeft.collectAsStateWithLifecycle()
+
+    if (gameState is GameViewModel.GameState.BluetoothDuelGame) {
+        BluetoothDuelLayout(
+            viewModel = bluetoothDuelViewModel,
+            onBackToMenu = {
+                bluetoothDuelViewModel.exitDuel()
+                gameViewModel.backToMenu()
+            }
+        )
+        return
+    }
 
     Column(
         modifier = Modifier
@@ -1732,11 +1778,72 @@ fun GamesScreen(gameViewModel: GameViewModel) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Scrollable Grid of 10 Games
+            // Scrollable Grid of Games
             LazyColumn(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                // FEATURED BANNER: 1v1 Bluetooth Duel Arena
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { gameViewModel.startBluetoothDuelGame() },
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(52.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text("⚔️", fontSize = 26.sp)
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "Đấu Trường Bluetooth 1v1",
+                                        fontWeight = FontWeight.Black,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Surface(
+                                        color = Color(0xFFFF1744),
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text(
+                                            "HOT 🔥",
+                                            color = Color.White,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Black,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    "Kết nối 2 máy Bluetooth hoặc Đấu với AI 4 cấp độ! Chọn nhiều thể loại: Đoán nghĩa, Nghịch đảo, Đúng/Sai, Xếp chữ...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
+                                )
+                            }
+                            Text("▶", fontSize = 18.sp, color = MaterialTheme.colorScheme.onTertiaryContainer)
+                        }
+                    }
+                }
+
                 // Game list items
                 item {
                     GameSelectionCard(
@@ -1824,6 +1931,14 @@ fun GamesScreen(gameViewModel: GameViewModel) {
                         desc = "Nói trực tiếp qua Micro của bạn để đối chiếu phát âm chuẩn bản xứ.",
                         emoji = "🗣️",
                         onClick = { gameViewModel.startPronunciationGame() }
+                    )
+                }
+                item {
+                    GameSelectionCard(
+                        title = "12. Đấu Trường 1v1 (Bluetooth & AI)",
+                        desc = "Đấu đối kháng thời gian thực: chọn trò chơi (Đoán nghĩa, Nghịch đảo, Đúng/Sai, Xếp chữ, Hỗn chiến) & Đấu với AI 4 cấp độ!",
+                        emoji = "⚔️",
+                        onClick = { gameViewModel.startBluetoothDuelGame() }
                     )
                 }
             }
