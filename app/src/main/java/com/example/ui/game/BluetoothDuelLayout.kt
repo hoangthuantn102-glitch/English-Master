@@ -36,12 +36,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.bluetooth.BluetoothDeviceItem
+import com.example.bluetooth.ConnectionMedium
 import com.example.bluetooth.ConnectionStatus
+import com.example.bluetooth.WifiRoomItem
 import com.example.ui.viewmodel.AiDifficulty
 import com.example.ui.viewmodel.BluetoothDuelViewModel
 import com.example.ui.viewmodel.DuelGameMode
 import com.example.ui.viewmodel.DuelQuestion
 import com.example.ui.viewmodel.DuelScreenState
+import com.example.ui.viewmodel.QuestionDistributionMode
+import com.example.ui.viewmodel.RoundRecapData
 
 @Composable
 fun BluetoothDuelLayout(
@@ -73,6 +77,7 @@ fun BluetoothDuelLayout(
     }
 
     var showAiConfigDialog by remember { mutableStateOf(false) }
+    var showGuideDialog by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -85,7 +90,8 @@ fun BluetoothDuelLayout(
                     viewModel = viewModel,
                     onBackToMenu = onBackToMenu,
                     onRequestPermissions = { permissionLauncher.launch(requiredPermissions) },
-                    onOpenAiConfig = { showAiConfigDialog = true }
+                    onOpenAiConfig = { showAiConfigDialog = true },
+                    onOpenGuide = { showGuideDialog = true }
                 )
             }
             DuelScreenState.WAITING_OPPONENT -> {
@@ -97,8 +103,11 @@ fun BluetoothDuelLayout(
             DuelScreenState.COUNTDOWN -> {
                 DuelCountdownScreen(viewModel = viewModel)
             }
-            DuelScreenState.BATTLE, DuelScreenState.ROUND_RECAP -> {
+            DuelScreenState.BATTLE -> {
                 DuelBattleScreen(viewModel = viewModel)
+            }
+            DuelScreenState.ROUND_RECAP -> {
+                DuelRoundRecapScreen(viewModel = viewModel)
             }
             DuelScreenState.MATCH_OVER -> {
                 DuelGameOverScreen(
@@ -122,6 +131,13 @@ fun BluetoothDuelLayout(
                 }
             )
         }
+
+        // Connection Guide Dialog (Bluetooth + Wi-Fi + Hotspot)
+        if (showGuideDialog) {
+            DuelConnectionGuideDialog(
+                onDismiss = { showGuideDialog = false }
+            )
+        }
     }
 }
 
@@ -131,12 +147,21 @@ private fun DuelLobbyScreen(
     viewModel: BluetoothDuelViewModel,
     onBackToMenu: () -> Unit,
     onRequestPermissions: () -> Unit,
-    onOpenAiConfig: () -> Unit
+    onOpenAiConfig: () -> Unit,
+    onOpenGuide: () -> Unit
 ) {
+    val context = LocalContext.current
     var pairedDevices by remember { mutableStateOf<List<BluetoothDeviceItem>>(emptyList()) }
     val discoveredDevices by viewModel.discoveredDevices.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val selectedGameMode by viewModel.selectedGameMode.collectAsStateWithLifecycle()
+
+    val connectionMedium by viewModel.connectionMedium.collectAsStateWithLifecycle()
+    val discoveredWifiRooms by viewModel.discoveredWifiRooms.collectAsStateWithLifecycle()
+    val isScanningWifi by viewModel.isScanningWifi.collectAsStateWithLifecycle()
+    val localWifiIp by viewModel.localWifiIp.collectAsStateWithLifecycle()
+
+    var showEnterIpDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         onRequestPermissions()
@@ -151,125 +176,305 @@ private fun DuelLobbyScreen(
         // Top Bar
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            IconButton(onClick = onBackToMenu) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Trở về")
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
+            ) {
+                IconButton(onClick = onBackToMenu) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Trở về")
+                }
+                Spacer(modifier = Modifier.width(4.dp))
+                Column {
+                    Text(
+                        text = "Đấu trường 1vs1",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Black
+                    )
+                    Text(
+                        text = "Wi-Fi LAN • Internet • Bluetooth • Đấu AI",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            Spacer(modifier = Modifier.width(6.dp))
-            Column {
-                Text(
-                    text = "Đấu Trường 1v1 Bluetooth",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Black
-                )
-                Text(
-                    text = "Đối kháng trực tiếp qua Bluetooth & Đấu với AI đa cấp độ",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+
+            // Quick Guide Button
+            FilledTonalButton(
+                onClick = onOpenGuide,
+                shape = RoundedCornerShape(12.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text("📖 Hướng Dẫn", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Connection Medium Selector Tab: Bluetooth vs Wi-Fi LAN
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(4.dp)
+        ) {
+            // Bluetooth Tab
+            val isBtActive = connectionMedium == ConnectionMedium.BLUETOOTH
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(11.dp))
+                    .clickable { viewModel.setConnectionMedium(ConnectionMedium.BLUETOOTH) },
+                color = if (isBtActive) MaterialTheme.colorScheme.primary else Color.Transparent,
+                shape = RoundedCornerShape(11.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("📡", fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Bluetooth 1v1",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = if (isBtActive) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Wi-Fi / Internet Tab
+            val isWifiActive = connectionMedium == ConnectionMedium.WIFI_LAN
+            Surface(
+                modifier = Modifier
+                    .weight(1.2f)
+                    .clip(RoundedCornerShape(11.dp))
+                    .clickable {
+                        viewModel.setConnectionMedium(ConnectionMedium.WIFI_LAN)
+                        viewModel.startWifiScan()
+                    },
+                color = if (isWifiActive) Color(0xFF00897B) else Color.Transparent,
+                shape = RoundedCornerShape(11.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("📶", fontSize = 16.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Wi-Fi & Internet",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = if (isWifiActive) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Bluetooth status alert if Bluetooth tab is selected and Bluetooth is off
+        if (connectionMedium == ConnectionMedium.BLUETOOTH && !viewModel.isBluetoothEnabled()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("⚠️", fontSize = 24.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Bluetooth đang TẮT!",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            text = "Bật Bluetooth hoặc chuyển sang tab 'Wi-Fi & Hotspot' để chơi.",
+                            color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f),
+                            fontSize = 11.sp
+                        )
+                    }
+                    Button(
+                        onClick = {
+                            try {
+                                context.startActivity(android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
+                            } catch (e: Exception) {
+                                // ignore
+                            }
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Text("Bật ngay", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        // Wi-Fi info banner if Wi-Fi tab is selected
+        if (connectionMedium == ConnectionMedium.WIFI_LAN) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF00897B).copy(alpha = 0.12f)),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("📶", fontSize = 24.sp)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Mạng Wi-Fi nội bộ, Internet hoặc Hotspot",
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF00695C),
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            text = "IP của máy: ${viewModel.getLocalIpAddress()} (Tự động quét phòng hoặc Nhập IP/Mã)",
+                            color = Color(0xFF00695C).copy(alpha = 0.85f),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // Action Buttons Grid depending on Medium
+        if (connectionMedium == ConnectionMedium.BLUETOOTH) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { viewModel.hostRoom() },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    ) {
+                        Text("👑", fontSize = 20.sp)
+                        Text("Tạo Phòng", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        if (isScanning) viewModel.stopScan() else viewModel.startScan()
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    ) {
+                        Text(if (isScanning) "📡" else "🔍", fontSize = 20.sp)
+                        Text(if (isScanning) "Dừng Quét" else "Quét Máy", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+
+                Button(
+                    onClick = onOpenAiConfig,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF9C27B0)
+                    )
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    ) {
+                        Text("🤖", fontSize = 20.sp)
+                        Text("Đấu Với AI", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+            }
+        } else {
+            // Wi-Fi Action Buttons (Host Wi-Fi, Scan Wi-Fi, Enter IP / Code, Solo AI)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { viewModel.startWifiHosting() },
+                    modifier = Modifier.weight(1.1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF00897B)
+                    )
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    ) {
+                        Text("👑", fontSize = 20.sp)
+                        Text("Tạo Phòng Wi-Fi", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        if (isScanningWifi) viewModel.stopWifiScan() else viewModel.startWifiScan()
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    )
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    ) {
+                        Text(if (isScanningWifi) "📡" else "🔍", fontSize = 20.sp)
+                        Text(if (isScanningWifi) "Dừng Quét" else "Quét Phòng", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = { showEnterIpDialog = true },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(vertical = 2.dp)
+                    ) {
+                        Text("⌨️", fontSize = 20.sp)
+                        Text("Nhập IP / Mã", fontWeight = FontWeight.Bold, fontSize = 11.sp, maxLines = 1)
+                    }
+                }
             }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
-
-        // Hero Banner Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer
-            ),
-            shape = RoundedCornerShape(20.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "⚔️",
-                    fontSize = 36.sp,
-                    modifier = Modifier.padding(end = 10.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Chiến Trận Thời Gian Thực!",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Text(
-                        text = "Chọn trò chơi phù hợp: Đoán nghĩa, Nghịch đảo, Đúng/Sai hoặc Xếp chữ để hạ gục HP đối phương!",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        // 3 Action Buttons: Host, Scan/Join, Solo Practice with AI
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = { viewModel.hostRoom() },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary
-                )
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(vertical = 2.dp)
-                ) {
-                    Text("👑", fontSize = 20.sp)
-                    Text("Tạo Phòng", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
-            }
-
-            Button(
-                onClick = {
-                    if (isScanning) viewModel.stopScan() else viewModel.startScan()
-                },
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.secondary
-                )
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(vertical = 2.dp)
-                ) {
-                    Text(if (isScanning) "📡" else "🔍", fontSize = 20.sp)
-                    Text(if (isScanning) "Dừng Quét" else "Quét Máy", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
-            }
-
-            Button(
-                onClick = onOpenAiConfig,
-                modifier = Modifier.weight(1f),
-                shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF9C27B0)
-                )
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.padding(vertical = 2.dp)
-                ) {
-                    Text("🤖", fontSize = 20.sp)
-                    Text("Đấu Với AI", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
 
         // --- SECTION: SELECT DUEL GAME MODE ---
         Row(
@@ -296,7 +501,7 @@ private fun DuelLobbyScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         // Horizontal game mode picker chips
         Row(
@@ -338,123 +543,307 @@ private fun DuelLobbyScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Bluetooth Devices List (Paired & Discovered)
-        Text(
-            text = "Chọn máy đối thủ để thách đấu:",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            text = "Mẹo: Ghép đôi Bluetooth trước trong Cài đặt của máy để kết nối ngay tức thì!",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        // --- LIST SECTION: Bluetooth Devices OR Wi-Fi Rooms ---
+        if (connectionMedium == ConnectionMedium.BLUETOOTH) {
+            Text(
+                text = "Chọn máy đối thủ Bluetooth:",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Mẹo: Ghép đôi Bluetooth trước trong Cài đặt của máy để kết nối ngay tức thì!",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
-        Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            val allDevices = (pairedDevices + discoveredDevices).distinctBy { it.address }
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val allDevices = (pairedDevices + discoveredDevices).distinctBy { it.address }
 
-            if (allDevices.isEmpty()) {
-                item {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Column(
+                if (allDevices.isEmpty()) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("📱", fontSize = 34.sp)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "Chưa phát hiện thiết bị Bluetooth",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Bấm 'Tạo Phòng' để mở sảnh, hoặc chuyển sang tab 'Wi-Fi & Hotspot' để kết nối chung mạng siêu dễ!",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                FilledTonalButton(
+                                    onClick = onOpenGuide,
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    Text("📖 Xem Hướng Dẫn Kết Nối 2 Máy", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    items(allDevices) { device ->
+                        Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(20.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
+                                .clickable { viewModel.joinRoom(device.address) },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                         ) {
-                            Text("📱", fontSize = 34.sp)
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "Chưa phát hiện thiết bị Bluetooth",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.bodyLarge
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Bấm 'Tạo Phòng' để chờ bạn bè kết nối, hoặc chọn 'Đấu Với AI' để luyện phản xạ ngay!",
-                                style = MaterialTheme.typography.bodySmall,
-                                textAlign = TextAlign.Center,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = if (device.isBonded) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(if (device.isBonded) "🔗" else "📱", fontSize = 18.sp)
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Text(
+                                            text = device.name,
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = if (device.isBonded) "Đã ghép đôi" else "Thiết bị lân cận",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                FilledTonalButton(
+                                    onClick = { viewModel.joinRoom(device.address) },
+                                    shape = RoundedCornerShape(10.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text("Thách Đấu ⚔️", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                }
+                            }
                         }
                     }
                 }
-            } else {
-                items(allDevices) { device ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { viewModel.joinRoom(device.address) },
-                        shape = RoundedCornerShape(14.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        ),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+            }
+        } else {
+            // Wi-Fi LAN / Hotspot Rooms List
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Phòng Wi-Fi nội bộ lân cận:",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (isScanningWifi) {
+                    Text(
+                        text = "Đang tìm phòng... 📡",
+                        fontSize = 11.sp,
+                        color = Color(0xFF00897B),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            Text(
+                text = "Máy 1 tạo phòng, máy 2 bấm 'Quét Phòng' hoặc 'Nhập IP / Mã' để vào ngay!",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (discoveredWifiRooms.isEmpty()) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            shape = RoundedCornerShape(16.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = if (device.isBonded) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                                    modifier = Modifier.size(40.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(if (device.isBonded) "🔗" else "📱", fontSize = 18.sp)
+                                Text("📶", fontSize = 34.sp)
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = if (isScanningWifi) "Đang dò tìm phòng trong mạng Wi-Fi..." else "Chưa thấy phòng Wi-Fi nào mở",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Bảo bạn của bạn bấm 'Tạo Phòng Wi-Fi' trên máy của họ, hoặc bấm 'Nhập IP / Mã' để kết nối trực tiếp!",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    textAlign = TextAlign.Center,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    FilledTonalButton(
+                                        onClick = { viewModel.startWifiScan() },
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Text("🔍 Quét Lại", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                    Button(
+                                        onClick = { showEnterIpDialog = true },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00897B))
+                                    ) {
+                                        Text("⌨️ Nhập IP / Mã", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                     }
                                 }
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column {
-                                    Text(
-                                        text = device.name,
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = if (device.isBonded) "Đã ghép đôi" else "Thiết bị lân cận",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
                             }
-
-                            FilledTonalButton(
-                                onClick = { viewModel.joinRoom(device.address) },
-                                shape = RoundedCornerShape(10.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        }
+                    }
+                } else {
+                    items(discoveredWifiRooms) { room ->
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { viewModel.connectToWifiRoom(room) },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            ),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("Thách Đấu ⚔️", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = Color(0xFF00897B).copy(alpha = 0.15f),
+                                        modifier = Modifier.size(42.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text("📶", fontSize = 20.sp)
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = room.hostName,
+                                                fontWeight = FontWeight.Bold,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (room.roomCode.isNotBlank()) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = Color(0xFF00897B)
+                                                ) {
+                                                    Text(
+                                                        text = "MÃ #${room.roomCode}",
+                                                        color = Color.White,
+                                                        fontWeight = FontWeight.Black,
+                                                        fontSize = 9.sp,
+                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Text(
+                                            text = "IP: ${room.ip}:${room.port}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                Button(
+                                    onClick = { viewModel.connectToWifiRoom(room) },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00897B)),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text("Vào Đấu ⚔️", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    // Dialog for entering Room IP or Room Code manually
+    if (showEnterIpDialog) {
+        EnterIpOrCodeDialog(
+            defaultSubnet = viewModel.getLocalIpAddress().substringBeforeLast("."),
+            onDismiss = { showEnterIpDialog = false },
+            onConnect = { target ->
+                showEnterIpDialog = false
+                viewModel.connectByIpOrCode(target)
+            }
+        )
     }
 }
 
@@ -467,7 +856,15 @@ private fun DuelWaitingScreen(
     val isHost by viewModel.isHost.collectAsStateWithLifecycle()
     val opponentName by viewModel.opponentName.collectAsStateWithLifecycle()
     val connectionStatus by viewModel.connectionStatus.collectAsStateWithLifecycle()
+    val connectionMedium by viewModel.connectionMedium.collectAsStateWithLifecycle()
     val selectedGameMode by viewModel.selectedGameMode.collectAsStateWithLifecycle()
+    val localWifiIp by viewModel.localWifiIp.collectAsStateWithLifecycle()
+    val wifiRoomCode by viewModel.wifiRoomCode.collectAsStateWithLifecycle()
+
+    val roundsPerMatch by viewModel.roundsPerMatch.collectAsStateWithLifecycle()
+    val questionsPerRound by viewModel.questionsPerRound.collectAsStateWithLifecycle()
+    val timePerQuestionSec by viewModel.timePerQuestionSec.collectAsStateWithLifecycle()
+    val questionDistributionMode by viewModel.questionDistributionMode.collectAsStateWithLifecycle()
 
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
@@ -488,19 +885,27 @@ private fun DuelWaitingScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        val circleColor = when {
+            connectionStatus == ConnectionStatus.CONNECTED -> Color(0xFF4CAF50).copy(alpha = 0.2f)
+            connectionMedium == ConnectionMedium.WIFI_LAN -> Color(0xFF00897B).copy(alpha = 0.2f)
+            else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+        }
+
         Box(
             modifier = Modifier
                 .size(105.dp)
                 .scale(pulseScale)
                 .clip(CircleShape)
-                .background(
-                    if (connectionStatus == ConnectionStatus.CONNECTED) Color(0xFF4CAF50).copy(alpha = 0.2f)
-                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
-                ),
+                .background(circleColor),
             contentAlignment = Alignment.Center
         ) {
             Text(
-                text = if (connectionStatus == ConnectionStatus.CONNECTED) "🤝" else if (isHost) "👑" else "📡",
+                text = when {
+                    connectionStatus == ConnectionStatus.CONNECTED -> "🤝"
+                    connectionMedium == ConnectionMedium.WIFI_LAN -> "📶"
+                    isHost -> "👑"
+                    else -> "📡"
+                },
                 fontSize = 46.sp
             )
         }
@@ -508,12 +913,12 @@ private fun DuelWaitingScreen(
         Spacer(modifier = Modifier.height(20.dp))
 
         Text(
-            text = if (connectionStatus == ConnectionStatus.CONNECTED)
-                "ĐÃ KẾT NỐI VỚI ĐỐI THỦ!"
-            else if (isHost)
-                "ĐANG CHỜ ĐỐI THỦ KẾT NỐI..."
-            else
-                "ĐANG KẾT NỐI VỚI CHỦ PHÒNG...",
+            text = when {
+                connectionStatus == ConnectionStatus.CONNECTED -> "ĐÃ KẾT NỐI VỚI ĐỐI THỦ!"
+                connectionMedium == ConnectionMedium.WIFI_LAN && isHost -> "PHÒNG WI-FI ĐANG MỞ..."
+                isHost -> "ĐANG CHỜ ĐỐI THỦ BLUETOOTH..."
+                else -> "ĐANG KẾT NỐI VỚI CHỦ PHÒNG..."
+            },
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Black,
             textAlign = TextAlign.Center
@@ -522,18 +927,59 @@ private fun DuelWaitingScreen(
         Spacer(modifier = Modifier.height(6.dp))
 
         Text(
-            text = if (connectionStatus == ConnectionStatus.CONNECTED)
-                "Đối thủ: $opponentName"
-            else if (isHost)
-                "Bảo bạn của bạn mở mục 'Quét Máy' hoặc bấm tên điện thoại của bạn trong danh sách ghép đôi!"
-            else
-                "Đang hoàn tất bắt tay Bluetooth...",
+            text = when {
+                connectionStatus == ConnectionStatus.CONNECTED -> "Đối thủ: $opponentName"
+                connectionMedium == ConnectionMedium.WIFI_LAN && isHost -> "Bảo bạn của bạn mở tab 'Wi-Fi & Hotspot' bấm Quét Phòng hoặc nhập mã phòng bên dưới!"
+                isHost -> "Bảo bạn của bạn mở mục 'Quét Máy' hoặc chọn tên điện thoại của bạn trong danh sách ghép đôi!"
+                else -> "Đang hoàn tất bắt tay dữ liệu thời gian thực..."
+            },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
 
-        Spacer(modifier = Modifier.height(18.dp))
+        // Show Wi-Fi Room Code & IP Box if Hosting on Wi-Fi
+        if (connectionMedium == ConnectionMedium.WIFI_LAN && isHost && connectionStatus != ConnectionStatus.CONNECTED) {
+            Spacer(modifier = Modifier.height(14.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFF00897B).copy(alpha = 0.15f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "MÃ PHÒNG WI-FI",
+                        fontWeight = FontWeight.Black,
+                        fontSize = 11.sp,
+                        color = Color(0xFF00695C),
+                        letterSpacing = 1.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (wifiRoomCode.isNotBlank()) "#$wifiRoomCode" else "Đang tạo...",
+                        fontSize = 28.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Color(0xFF004D40)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Địa chỉ IP Máy Chủ: $localWifiIp:8888",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF00695C)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Selected Game Mode Card (Host can change mode anytime before starting)
         Card(
@@ -625,7 +1071,175 @@ private fun DuelWaitingScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(28.dp))
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // --- CÀI ĐẶT TRẬN ĐẤU CỦA CHỦ PHÒNG (Room Settings) ---
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("⚙️", fontSize = 18.sp)
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isHost) "Cài Đặt Trận Đấu (Chủ Phòng):" else "Cài Đặt Trận Đấu:",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    if (!isHost) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                        ) {
+                            Text(
+                                text = "Đồng bộ từ chủ phòng",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 1. Số hiệp trong 1 trận
+                Text(
+                    text = "1. Số hiệp đấu: $roundsPerMatch Hiệp",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (isHost) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(1, 3, 5, 7).forEach { r ->
+                            val sel = r == roundsPerMatch
+                            FilterChip(
+                                selected = sel,
+                                onClick = { viewModel.setRoundsPerMatch(r) },
+                                label = { Text("$r Hiệp", fontSize = 11.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal) }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 2. Số câu hỏi trong 1 hiệp
+                Text(
+                    text = "2. Số câu hỏi mỗi hiệp: $questionsPerRound câu",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (isHost) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(1, 2, 3).forEach { q ->
+                            val sel = q == questionsPerRound
+                            FilterChip(
+                                selected = sel,
+                                onClick = { viewModel.setQuestionsPerRound(q) },
+                                label = { Text("$q câu", fontSize = 11.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal) }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 3. Thời gian cho mỗi câu
+                Text(
+                    text = "3. Thời gian mỗi câu: $timePerQuestionSec giây",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (isHost) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(8, 10, 15, 20).forEach { sec ->
+                            val sel = sec == timePerQuestionSec
+                            FilterChip(
+                                selected = sel,
+                                onClick = { viewModel.setTimePerQuestion(sec) },
+                                label = { Text("${sec}s", fontSize = 11.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal) }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // 4. Cơ chế câu hỏi giữa 2 máy
+                Text(
+                    text = "4. Câu hỏi giữa 2 máy: ${questionDistributionMode.title}",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = questionDistributionMode.subtitle,
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (isHost) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        QuestionDistributionMode.values().forEach { mode ->
+                            val isSel = mode == questionDistributionMode
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSel) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                                border = if (isSel) androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { viewModel.setQuestionDistributionMode(mode) }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(mode.icon, fontSize = 14.sp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(mode.title, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        Text(mode.subtitle, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    if (isSel) {
+                                        Text("✓", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Black)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
 
         if (connectionStatus == ConnectionStatus.CONNECTED && isHost) {
             Button(
@@ -637,7 +1251,7 @@ private fun DuelWaitingScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE91E63))
             ) {
                 Text(
-                    text = "BẮT ĐẦU TRẬN ĐẤU ⚔️ (5 HIỆP)",
+                    text = "BẮT ĐẦU TRẬN ĐẤU ⚔️ ($roundsPerMatch HIỆP • ${timePerQuestionSec}S)",
                     fontWeight = FontWeight.Black,
                     fontSize = 15.sp
                 )
@@ -677,7 +1291,6 @@ private fun DuelCountdownScreen(viewModel: BluetoothDuelViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        // Game Mode Header Badge
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = Color.White.copy(alpha = 0.12f)
@@ -771,8 +1384,9 @@ private fun DuelBattleScreen(viewModel: BluetoothDuelViewModel) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        val totalRounds = viewModel.totalRounds
                         Text(
-                            text = "HIỆP $currentRound/5",
+                            text = "HIỆP $currentRound/$totalRounds",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Black,
                             color = MaterialTheme.colorScheme.primary
@@ -1251,7 +1865,6 @@ private fun ScrambleDuelCard(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Letter tiles representation
                 Text(
                     text = question.promptQuestion,
                     style = MaterialTheme.typography.headlineMedium,
@@ -1328,7 +1941,174 @@ private fun ScrambleDuelCard(
     }
 }
 
-// --- 5. MATCH OVER SCREEN ---
+// --- 5. ROUND RECAP SCREEN (HIỆU ỨNG KẾT THÚC MỖI HIỆP) ---
+@Composable
+private fun DuelRoundRecapScreen(viewModel: BluetoothDuelViewModel) {
+    val recap by viewModel.roundRecap.collectAsStateWithLifecycle()
+    val playerHp by viewModel.playerHp.collectAsStateWithLifecycle()
+    val opponentHp by viewModel.opponentHp.collectAsStateWithLifecycle()
+    val opponentName by viewModel.opponentName.collectAsStateWithLifecycle()
+    val totalRounds = viewModel.totalRounds
+
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val scale by infiniteTransition.animateFloat(
+        initialValue = 0.95f,
+        targetValue = 1.05f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(700, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "scale"
+    )
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color(0xFF1A1C24),
+                        Color(0xFF101216)
+                    )
+                )
+            )
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        val roundWon = recap?.playerRoundWon
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = Color.White.copy(alpha = 0.12f)
+        ) {
+            Text(
+                text = "KẾT THÚC HIỆP ${recap?.roundNumber ?: 1} / $totalRounds",
+                color = Color.White,
+                fontWeight = FontWeight.Black,
+                fontSize = 12.sp,
+                letterSpacing = 1.5.sp,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        Box(
+            modifier = Modifier
+                .size(95.dp)
+                .scale(scale)
+                .clip(CircleShape)
+                .background(
+                    when (roundWon) {
+                        true -> Color(0xFF4CAF50).copy(alpha = 0.25f)
+                        false -> Color(0xFFFF9800).copy(alpha = 0.25f)
+                        null -> Color(0xFF2196F3).copy(alpha = 0.25f)
+                    }
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = when (roundWon) {
+                    true -> "🎉"
+                    false -> "💪"
+                    null -> "🤝"
+                },
+                fontSize = 48.sp
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = when (roundWon) {
+                true -> "CHÚC MỪNG CHIẾN THẮNG HIỆP NÀY! 🏆"
+                false -> "ĐỐI THỦ VỪA DẪN TRƯỚC! ĐỘNG VIÊN CỐ LÊN! 🛡️"
+                null -> "HÒA ĐIỂM CÂN NÃO Ở HIỆP NÀY! 🤝"
+            },
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Black,
+            textAlign = TextAlign.Center,
+            color = when (roundWon) {
+                true -> Color(0xFF4CAF50)
+                false -> Color(0xFFFFB74D)
+                null -> Color(0xFF64B5F6)
+            }
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Text(
+            text = recap?.message ?: "",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White.copy(alpha = 0.85f),
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Damage Summary Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = Color.White.copy(alpha = 0.08f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("🟢 Bạn", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "${recap?.playerDamageDealt ?: 0} Sát thương",
+                        color = Color(0xFF4CAF50),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 14.sp
+                    )
+                    Text("$playerHp HP còn lại", color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp)
+                }
+
+                Text("VS", color = Color.White.copy(alpha = 0.4f), fontWeight = FontWeight.Black)
+
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("🔴 $opponentName", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "${recap?.opponentDamageDealt ?: 0} Sát thương",
+                        color = Color(0xFFFF5252),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 14.sp
+                    )
+                    Text("$opponentHp HP còn lại", color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        LinearProgressIndicator(
+            modifier = Modifier
+                .width(160.dp)
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp)),
+            color = MaterialTheme.colorScheme.primary
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Đang chuyển sang hiệp tiếp theo...",
+            color = Color.White.copy(alpha = 0.6f),
+            fontSize = 11.sp
+        )
+    }
+}
+
+// --- 6. MATCH OVER SCREEN (HIỆU ỨNG THẮNG CHUNG CUỘC, PHÁO HOA, LỜI CHÚC MỪNG) ---
 @Composable
 private fun DuelGameOverScreen(
     viewModel: BluetoothDuelViewModel,
@@ -1342,112 +2122,166 @@ private fun DuelGameOverScreen(
     val playerHp by viewModel.playerHp.collectAsStateWithLifecycle()
     val opponentHp by viewModel.opponentHp.collectAsStateWithLifecycle()
     val selectedGameMode by viewModel.selectedGameMode.collectAsStateWithLifecycle()
+    val roundsPerMatch by viewModel.roundsPerMatch.collectAsStateWithLifecycle()
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = if (isWinner) "🏆" else "💀",
-            fontSize = 72.sp
-        )
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        Text(
-            text = title,
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.Black,
-            textAlign = TextAlign.Center,
-            color = if (isWinner) Color(0xFF4CAF50) else Color(0xFFFF5252)
-        )
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        Text(
-            text = notification,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-
-        Spacer(modifier = Modifier.height(18.dp))
-
-        // Final HP Summary Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            .background(
+                Brush.verticalGradient(
+                    if (isWinner) listOf(Color(0xFF0D1B2A), Color(0xFF1B263B), Color(0xFF000814))
+                    else listOf(Color(0xFF210B0E), Color(0xFF140809), Color(0xFF0B0405))
+                )
             )
+    ) {
+        // Fireworks canvas for Match Champion
+        if (isWinner) {
+            CelebrationFireworksEffect(
+                onExplosion = {
+                    viewModel.triggerFireworkSound()
+                }
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "Chế độ: ${selectedGameMode.title}",
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Máu còn lại: $playerHp HP (Bạn) - $opponentHp HP (Đối thủ)",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
+            Text(
+                text = if (isWinner) "🏆👑🎉" else "💀🛡️",
+                fontSize = if (isWinner) 56.sp else 60.sp
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Black,
+                textAlign = TextAlign.Center,
+                color = if (isWinner) Color(0xFFFFD700) else Color(0xFFFF5252)
+            )
+
+            if (isWinner) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFFFFD700).copy(alpha = 0.2f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFD700))
                 ) {
                     Text(
-                        text = "+$earnedXp XP 🌟",
+                        text = "✨ QUÁN QUÂN ĐẤU TRƯỜNG 1VS1 XUẤT SẮC ✨",
+                        color = Color(0xFFFFD700),
                         fontWeight = FontWeight.Black,
-                        color = Color(0xFFFFB300),
-                        fontSize = 16.sp
-                    )
-                    Text(
-                        text = "+$earnedCoins Coins 🪙",
-                        fontWeight = FontWeight.Black,
-                        color = Color(0xFFFF9800),
-                        fontSize = 16.sp
+                        fontSize = 11.sp,
+                        letterSpacing = 1.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
                     )
                 }
             }
-        }
 
-        Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-        Button(
-            onClick = { viewModel.requestRematch() },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp),
-            shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary
+            Text(
+                text = if (isWinner) {
+                    "Chúc mừng bạn đã xuất sắc chiến thắng chung cuộc sau $roundsPerMatch hiệp đấu căng thẳng!"
+                } else {
+                    "Trận đấu rất kịch tính! Thất bại là mẹ thành công, cùng luyện tập và phục thù ở trận kế tiếp nhé!"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.9f),
+                textAlign = TextAlign.Center,
+                lineHeight = 20.sp
             )
-        ) {
-            Text("Đấu Lại Ngay (Rematch) 🔄", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-        }
 
-        Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(6.dp))
 
-        OutlinedButton(
-            onClick = onBackToMenu,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(50.dp),
-            shape = RoundedCornerShape(14.dp)
-        ) {
-            Text("Về Menu Trò Chơi 🏠", fontWeight = FontWeight.Bold)
+            Text(
+                text = notification,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.7f),
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color.White.copy(alpha = 0.12f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Chế độ: ${selectedGameMode.title} • $roundsPerMatch Hiệp",
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = if (isWinner) Color(0xFFFFD700) else Color.White
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Máu còn lại: $playerHp HP (Bạn) - $opponentHp HP (Đối thủ)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = Color.White
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        Text(
+                            text = "+$earnedXp XP 🌟",
+                            fontWeight = FontWeight.Black,
+                            color = Color(0xFFFFD54F),
+                            fontSize = 16.sp
+                        )
+                        Text(
+                            text = "+$earnedCoins Coins 🪙",
+                            fontWeight = FontWeight.Black,
+                            color = Color(0xFFFFB74D),
+                            fontSize = 16.sp
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Button(
+                onClick = { viewModel.requestRematch() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isWinner) Color(0xFFFF9800) else MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Text("Đấu Lại Ngay (Rematch) 🔄", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedButton(
+                onClick = onBackToMenu,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Text("Về Menu Trò Chơi 🏠", fontWeight = FontWeight.Bold, color = Color.White)
+            }
         }
     }
 }
@@ -1482,7 +2316,6 @@ private fun AiDuelConfigDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Section 1: Choose Difficulty Level
                 Text(
                     text = "1. Mức Độ Thử Thách AI:",
                     fontWeight = FontWeight.Bold,
@@ -1547,7 +2380,6 @@ private fun AiDuelConfigDialog(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Section 2: Choose Game Mode
                 Text(
                     text = "2. Chọn Trò Chơi:",
                     fontWeight = FontWeight.Bold,
@@ -1606,6 +2438,227 @@ private fun AiDuelConfigDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("Đóng")
+            }
+        }
+    )
+}
+
+// --- 7. ENTER IP / ROOM CODE DIALOG ---
+@Composable
+private fun EnterIpOrCodeDialog(
+    defaultSubnet: String,
+    onDismiss: () -> Unit,
+    onConnect: (String) -> Unit
+) {
+    var textInput by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("⌨️", fontSize = 24.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Nhập IP hoặc Mã Phòng",
+                    fontWeight = FontWeight.Black,
+                    style = MaterialTheme.typography.titleLarge
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Nhập Mã phòng (ví dụ: 1588) hoặc Địa chỉ IP của máy chủ để kết nối trực tiếp:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = textInput,
+                    onValueChange = { textInput = it },
+                    placeholder = { Text("Ví dụ: 192.168.1.15 hoặc Mã số") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                )
+
+                // Quick buttons for Hotspot default IP
+                Text(
+                    text = "Gợi ý nhanh:",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    SuggestionChip(
+                        onClick = { textInput = "192.168.43.1" },
+                        label = { Text("📱 Hotspot (192.168.43.1)", fontSize = 11.sp) }
+                    )
+                    SuggestionChip(
+                        onClick = { textInput = "$defaultSubnet." },
+                        label = { Text("📶 Mạng LAN ($defaultSubnet.x)", fontSize = 11.sp) }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (textInput.isNotBlank()) {
+                        onConnect(textInput.trim())
+                    }
+                },
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00897B))
+            ) {
+                Text("KẾT NỐI NGAY ⚔️", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Hủy")
+            }
+        }
+    )
+}
+
+// --- 8. CONNECTION GUIDE DIALOG (BLUETOOTH + WI-FI + HOTSPOT) ---
+@Composable
+private fun DuelConnectionGuideDialog(
+    onDismiss: () -> Unit
+) {
+    var selectedTab by remember { mutableStateOf(0) } // 0: Bluetooth, 1: Wi-Fi LAN, 2: Hotspot
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("📖", fontSize = 24.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Hướng Dẫn Kết Nối 2 Máy",
+                    fontWeight = FontWeight.Black,
+                    style = MaterialTheme.typography.titleLarge
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Tab selector
+                TabRow(
+                    selectedTabIndex = selectedTab,
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.clip(RoundedCornerShape(12.dp))
+                ) {
+                    Tab(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        text = { Text("Bluetooth", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+                    Tab(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        text = { Text("Wi-Fi & Internet", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+                    Tab(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
+                        text = { Text("Điểm Phát Hotspot", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+                }
+
+                when (selectedTab) {
+                    0 -> {
+                        // Bluetooth instructions
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("📡 KẾT NỐI QUA BLUETOOTH", fontWeight = FontWeight.Black, fontSize = 13.sp)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "1. Bật Bluetooth trên cả 2 điện thoại.\n" +
+                                    "2. Vào Cài đặt Bluetooth của máy và Ghép đôi (Pair) 2 máy trước 1 lần duy nhất.\n" +
+                                    "3. Máy 1: Chọn tab 'Bluetooth' ➔ Bấm '👑 Tạo Phòng'.\n" +
+                                    "4. Máy 2: Bấm '🔍 Quét Máy' hoặc chọn tên Máy 1 trong mục Đã ghép đôi ➔ Bấm 'Thách Đấu ⚔️'.\n" +
+                                    "5. Khi cả 2 hiện 'ĐÃ KẾT NỐI', Chủ phòng bấm 'BẮT ĐẦU TRẬN ĐẤU'!",
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp
+                                )
+                            }
+                        }
+                    }
+                    1 -> {
+                        // Wi-Fi LAN & Internet instructions
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF00897B).copy(alpha = 0.15f)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("📶 KẾT NỐI QUA WI-FI NỘI BỘ HOẶC INTERNET", fontWeight = FontWeight.Black, fontSize = 13.sp, color = Color(0xFF00695C))
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "🌐 CÁCH 1 - WI-FI NỘI BỘ (Chung mạng Wi-Fi):\n" +
+                                    "1. Cả 2 máy kết nối vào CÙNG 1 MẠNG WI-FI (nhà riêng, trường học, quán cafe).\n" +
+                                    "2. Máy 1: Chọn tab 'Wi-Fi & Internet' ➔ Bấm '👑 Tạo Phòng' (hiển thị IP và Mã phòng).\n" +
+                                    "3. Máy 2: Bấm '🔍 Quét Phòng', phòng của Máy 1 sẽ xuất hiện ngay ➔ Bấm 'Vào Đấu ⚔️'.\n\n" +
+                                    "🌍 CÁCH 2 - QUA INTERNET (Khác mạng Wi-Fi / 4G):\n" +
+                                    "1. Máy 1 tạo phòng và xem IP máy (hoặc IP công cộng/VPN).\n" +
+                                    "2. Máy 2 bấm '⌨️ Nhập IP / Mã' ➔ Nhập địa chỉ IP của Máy 1 (ví dụ 192.168.x.x hoặc IP Internet) ➔ Bấm 'KẾT NỐI NGAY' là vào trận tức thì!",
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp,
+                                    color = Color(0xFF004D40)
+                                )
+                            }
+                        }
+                    }
+                    2 -> {
+                        // Wi-Fi Hotspot instructions
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFFFA000).copy(alpha = 0.15f)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("📱 KẾT NỐI QUA ĐIỂM PHÁT SÓNG (HOTSPOT)", fontWeight = FontWeight.Black, fontSize = 13.sp, color = Color(0xFFE65100))
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "⚡ KHÔNG CẦN INTERNET, KHÔNG TỐN 3G/4G!\n\n" +
+                                    "1. Máy 1: Bật 'Điểm phát sóng di động' (Personal Hotspot) trong Cài đặt của điện thoại.\n" +
+                                    "2. Máy 2: Bật Wi-Fi và kết nối vào Điểm phát sóng của Máy 1.\n" +
+                                    "3. Mở game, vào tab 'Wi-Fi & Hotspot'.\n" +
+                                    "4. Máy 1: Bấm 'Tạo Phòng Wi-Fi'.\n" +
+                                    "5. Máy 2: Bấm 'Nhập IP / Mã' ➔ Bấm gợi ý '📱 Hotspot (192.168.43.1)' ➔ Bấm 'KẾT NỐI NGAY' là vào trận liền!",
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp,
+                                    color = Color(0xFFBF360C)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Đã Hiểu, Bắt Đầu! 👍", fontWeight = FontWeight.Bold)
             }
         }
     )

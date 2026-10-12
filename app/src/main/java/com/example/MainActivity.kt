@@ -507,7 +507,7 @@ fun HomeScreen(
                         horizontalArrangement = Arrangement.Center,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text("Đấu 1v1 Bluetooth (Kịch tính) ", fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onTertiary)
+                        Text("Đấu trường 1vs1 (Kịch tính) ", fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onTertiary)
                         Text("⚔️🔥", fontSize = 16.sp)
                     }
                 }
@@ -1813,7 +1813,7 @@ fun GamesScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        "Đấu Trường Bluetooth 1v1",
+                                        "Đấu trường 1vs1",
                                         fontWeight = FontWeight.Black,
                                         style = MaterialTheme.typography.titleMedium,
                                         color = MaterialTheme.colorScheme.onTertiaryContainer
@@ -1834,7 +1834,7 @@ fun GamesScreen(
                                 }
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    "Kết nối 2 máy Bluetooth hoặc Đấu với AI 4 cấp độ! Chọn nhiều thể loại: Đoán nghĩa, Nghịch đảo, Đúng/Sai, Xếp chữ...",
+                                    "Đấu đối kháng 2 máy qua Wi-Fi / Internet / Hotspot / Bluetooth! Chọn 5 trò chơi kịch tính & Đấu AI 4 cấp độ...",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
                                 )
@@ -1935,8 +1935,8 @@ fun GamesScreen(
                 }
                 item {
                     GameSelectionCard(
-                        title = "12. Đấu Trường 1v1 (Bluetooth & AI)",
-                        desc = "Đấu đối kháng thời gian thực: chọn trò chơi (Đoán nghĩa, Nghịch đảo, Đúng/Sai, Xếp chữ, Hỗn chiến) & Đấu với AI 4 cấp độ!",
+                        title = "12. Đấu trường 1vs1",
+                        desc = "Đấu đối kháng 2 máy qua Wi-Fi nội bộ/Internet/Hotspot/Bluetooth: 5 chế độ chơi cực cuốn & Đấu AI 4 cấp độ!",
                         emoji = "⚔️",
                         onClick = { gameViewModel.startBluetoothDuelGame() }
                     )

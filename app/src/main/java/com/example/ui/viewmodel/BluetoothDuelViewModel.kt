@@ -15,6 +15,7 @@ import com.example.data.AppDatabase
 import com.example.data.UserProfile
 import com.example.data.Word
 import com.example.data.WordRepository
+import com.example.util.DuelSoundEffectManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.json.JSONArray
@@ -126,6 +127,32 @@ enum class AiDifficulty(
     )
 }
 
+enum class QuestionDistributionMode(
+    val title: String,
+    val subtitle: String,
+    val icon: String,
+    val badge: String
+) {
+    IDENTICAL(
+        title = "Thứ tự giống hệt nhau",
+        subtitle = "Cả 2 máy nhận cùng 1 câu hỏi theo cùng thứ tự",
+        icon = "👥",
+        badge = "CÔNG BẰNG"
+    ),
+    SHUFFLED(
+        title = "Đảo thứ tự câu hỏi",
+        subtitle = "Cùng bộ câu hỏi nhưng thứ tự hiển thị ngẫu nhiên khác nhau",
+        icon = "🔀",
+        badge = "BẢO MẬT"
+    ),
+    DIFFERENT_EQUAL(
+        title = "Câu hỏi khác nhau (Độ khó tương đương)",
+        subtitle = "Mỗi máy 1 bộ từ vựng riêng biệt, cân tài cân sức",
+        icon = "⚡🎲",
+        badge = "ĐỘC LẬP"
+    )
+}
+
 data class DuelQuestion(
     val id: Int,
     val mode: DuelGameMode,
@@ -136,13 +163,21 @@ data class DuelQuestion(
     val explanation: String = ""
 )
 
+data class RoundRecapData(
+    val roundNumber: Int,
+    val playerRoundWon: Boolean?,
+    val playerDamageDealt: Int,
+    val opponentDamageDealt: Int,
+    val message: String
+)
+
 enum class DuelScreenState {
     LOBBY,              // Select Role: Host, Join, or Practice Bot
     WAITING_OPPONENT,   // Host listening or Client connecting
     COUNTDOWN,          // 3..2..1.. Fight!
     BATTLE,             // Realtime round
-    ROUND_RECAP,        // 2-second intermission showing round damage
-    MATCH_OVER          // Winner announcement and rewards
+    ROUND_RECAP,        // Intermission showing round victory/defeat celebration
+    MATCH_OVER          // Match Champion / Final Defeat celebration
 }
 
 class BluetoothDuelViewModel(application: Application) : AndroidViewModel(application) {
@@ -166,6 +201,19 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
     private val _playerName = MutableStateFlow("Người chơi")
     val playerName = _playerName.asStateFlow()
 
+    // Host Configurable Match Settings
+    private val _roundsPerMatch = MutableStateFlow(5)
+    val roundsPerMatch = _roundsPerMatch.asStateFlow()
+
+    private val _questionsPerRound = MutableStateFlow(1)
+    val questionsPerRound = _questionsPerRound.asStateFlow()
+
+    private val _timePerQuestionSec = MutableStateFlow(10)
+    val timePerQuestionSec = _timePerQuestionSec.asStateFlow()
+
+    private val _questionDistributionMode = MutableStateFlow(QuestionDistributionMode.IDENTICAL)
+    val questionDistributionMode = _questionDistributionMode.asStateFlow()
+
     // Game Mode Selection
     private val _selectedGameMode = MutableStateFlow(DuelGameMode.FAST_CHOICE)
     val selectedGameMode = _selectedGameMode.asStateFlow()
@@ -176,8 +224,13 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
     val opponentName = duelManager.opponentName
     val connectionStatus = duelManager.connectionStatus
+    val connectionMedium = duelManager.connectionMedium
     val discoveredDevices = duelManager.discoveredDevices
     val isScanning = duelManager.isScanning
+    val discoveredWifiRooms = duelManager.discoveredWifiRooms
+    val isScanningWifi = duelManager.isScanningWifi
+    val localWifiIp = duelManager.localWifiIp
+    val wifiRoomCode = duelManager.wifiRoomCode
 
     // Battle Metrics
     private val _playerHp = MutableStateFlow(100)
@@ -189,7 +242,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
     private val _currentRound = MutableStateFlow(1)
     val currentRound = _currentRound.asStateFlow()
 
-    val totalRounds = 5
+    val totalRounds: Int get() = _roundsPerMatch.value
 
     private val _roundQuestions = MutableStateFlow<List<DuelQuestion>>(emptyList())
     val roundQuestions = _roundQuestions.asStateFlow()
@@ -211,6 +264,13 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
     private val _roundNotification = MutableStateFlow("")
     val roundNotification = _roundNotification.asStateFlow()
+
+    private val _roundRecap = MutableStateFlow<RoundRecapData?>(null)
+    val roundRecap = _roundRecap.asStateFlow()
+
+    // Track round damage to determine round winner
+    private var playerRoundDamageDealt = 0
+    private var opponentRoundDamageDealt = 0
 
     private val _recentFloatingEmote = MutableStateFlow<String?>(null)
     val recentFloatingEmote = _recentFloatingEmote.asStateFlow()
@@ -259,7 +319,10 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         }
 
         duelManager.onOpponentDisconnected = {
-            if (_screenState.value == DuelScreenState.BATTLE || _screenState.value == DuelScreenState.COUNTDOWN) {
+            if (_screenState.value == DuelScreenState.BATTLE ||
+                _screenState.value == DuelScreenState.COUNTDOWN ||
+                _screenState.value == DuelScreenState.ROUND_RECAP
+            ) {
                 _roundNotification.value = "⚠️ Đối thủ đã rời trận đấu!"
                 endMatch(won = true, reason = "Đối thủ ngắt kết nối")
             } else {
@@ -268,20 +331,53 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
+    fun isBluetoothSupported(): Boolean = duelManager.isBluetoothSupported()
+
+    fun isBluetoothEnabled(): Boolean = duelManager.isBluetoothEnabled()
+
     fun getPairedDevices(): List<BluetoothDeviceItem> = duelManager.getPairedDevices()
 
     fun startScan() = duelManager.startDiscovery()
 
     fun stopScan() = duelManager.stopDiscovery()
 
-    fun selectGameMode(mode: DuelGameMode) {
-        _selectedGameMode.value = mode
+    // Room Host Settings Configuration
+    fun setRoundsPerMatch(rounds: Int) {
+        _roundsPerMatch.value = rounds.coerceIn(1, 15)
+        syncSettingsToOpponent()
+    }
+
+    fun setQuestionsPerRound(qCount: Int) {
+        _questionsPerRound.value = qCount.coerceIn(1, 5)
+        syncSettingsToOpponent()
+    }
+
+    fun setTimePerQuestion(seconds: Int) {
+        _timePerQuestionSec.value = seconds.coerceIn(5, 30)
+        syncSettingsToOpponent()
+    }
+
+    fun setQuestionDistributionMode(mode: QuestionDistributionMode) {
+        _questionDistributionMode.value = mode
+        syncSettingsToOpponent()
+    }
+
+    private fun syncSettingsToOpponent() {
         if (_isHost.value && duelManager.connectionStatus.value == ConnectionStatus.CONNECTED) {
             val payload = JSONObject().apply {
-                put("mode", mode.name)
+                put("mode", _selectedGameMode.value.name)
+                put("roundsPerMatch", _roundsPerMatch.value)
+                put("questionsPerRound", _questionsPerRound.value)
+                put("timePerQuestion", _timePerQuestionSec.value)
+                put("distributionMode", _questionDistributionMode.value.name)
             }
-            duelManager.sendPacket("MODE_CHANGE", payload)
+            duelManager.sendPacket("CONFIG_SYNC", payload)
         }
+    }
+
+    fun selectGameMode(mode: DuelGameMode) {
+        _selectedGameMode.value = mode
+        syncSettingsToOpponent()
     }
 
     fun selectAiDifficulty(difficulty: AiDifficulty) {
@@ -299,6 +395,34 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         _screenState.value = DuelScreenState.WAITING_OPPONENT
         duelManager.connectToDevice(deviceAddress, _playerName.value)
     }
+
+    fun setConnectionMedium(medium: com.example.bluetooth.ConnectionMedium) {
+        duelManager.setConnectionMedium(medium)
+    }
+
+    fun startWifiHosting() {
+        _isHost.value = true
+        _screenState.value = DuelScreenState.WAITING_OPPONENT
+        duelManager.startWifiHosting(_playerName.value)
+    }
+
+    fun connectToWifiRoom(room: com.example.bluetooth.WifiRoomItem) {
+        _isHost.value = false
+        _screenState.value = DuelScreenState.WAITING_OPPONENT
+        duelManager.connectToWifiRoom(room.ip, room.port, _playerName.value)
+    }
+
+    fun connectByIpOrCode(target: String) {
+        _isHost.value = false
+        _screenState.value = DuelScreenState.WAITING_OPPONENT
+        duelManager.connectByRoomCodeOrIp(target, _playerName.value)
+    }
+
+    fun startWifiScan() = duelManager.startWifiDiscovery()
+
+    fun stopWifiScan() = duelManager.stopWifiDiscovery()
+
+    fun getLocalIpAddress(): String = duelManager.getLocalIpAddress()
 
     fun startPracticeBot(
         difficulty: AiDifficulty = _selectedAiDifficulty.value,
@@ -324,13 +448,30 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
     private fun startCountdownAndMatch() {
         val targetMode = _selectedGameMode.value
-        val generatedQuestions = generateDuelQuestions(totalRounds, targetMode)
-        _roundQuestions.value = generatedQuestions
+        val rounds = _roundsPerMatch.value
+        val distMode = _questionDistributionMode.value
 
-        // Send INIT_MATCH packet to client if connected over Bluetooth
+        val pool = _words.value.ifEmpty { getDefaultWordPool() }
+        val effectivePool = if (pool.size < 6) getDefaultWordPool() else pool
+
+        val hostQuestions = generateDuelQuestions(rounds, targetMode, effectivePool)
+        _roundQuestions.value = hostQuestions
+
+        // Send INIT_MATCH packet to client if connected over Bluetooth / Wi-Fi
         if (duelManager.connectionStatus.value == ConnectionStatus.CONNECTED) {
+            val clientQuestions = when (distMode) {
+                QuestionDistributionMode.IDENTICAL -> hostQuestions
+                QuestionDistributionMode.SHUFFLED -> hostQuestions.shuffled()
+                QuestionDistributionMode.DIFFERENT_EQUAL -> {
+                    // Equivalent difficulty: separate distinct words from same pool
+                    val remainingPool = effectivePool.filterNot { w -> hostQuestions.any { it.id == w.id } }
+                    val altPool = if (remainingPool.size >= rounds) remainingPool else effectivePool.shuffled()
+                    generateDuelQuestions(rounds, targetMode, altPool)
+                }
+            }
+
             val questionsArray = JSONArray()
-            generatedQuestions.forEach { q ->
+            clientQuestions.forEach { q ->
                 val qObj = JSONObject().apply {
                     put("id", q.id)
                     put("mode", q.mode.name)
@@ -346,6 +487,8 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
             }
             val payload = JSONObject().apply {
                 put("mode", targetMode.name)
+                put("roundsPerMatch", rounds)
+                put("timePerQuestion", _timePerQuestionSec.value)
                 put("questions", questionsArray)
             }
             duelManager.sendPacket("INIT_MATCH", payload)
@@ -360,6 +503,9 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         _opponentHp.value = 100
         _currentRound.value = 1
         _roundNotification.value = ""
+        _roundRecap.value = null
+        playerRoundDamageDealt = 0
+        opponentRoundDamageDealt = 0
 
         viewModelScope.launch {
             for (i in 3 downTo 1) {
@@ -379,6 +525,8 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         _selectedOption.value = null
         _hasAnsweredCurrentRound.value = false
         _roundNotification.value = ""
+        playerRoundDamageDealt = 0
+        opponentRoundDamageDealt = 0
 
         val questions = _roundQuestions.value
         if (roundNum <= questions.size) {
@@ -401,7 +549,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
     private fun startRoundTimer(mode: DuelGameMode) {
         roundTimerJob?.cancel()
-        val durationSec = if (mode == DuelGameMode.TRUE_FALSE) 8 else 10
+        val durationSec = _timePerQuestionSec.value
         _roundTimeRemaining.value = durationSec
 
         roundTimerJob = viewModelScope.launch {
@@ -428,7 +576,6 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         val elapsedMs = System.currentTimeMillis() - roundStartTimeMs
 
         if (isCorrect) {
-            // Speed damage calculation
             val dmgDealt: Int
             val message: String
             if (elapsedMs <= 3000) {
@@ -445,6 +592,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
                 triggerVibrate(80)
             }
 
+            playerRoundDamageDealt += dmgDealt
             _roundNotification.value = message
             val newOpponentHp = (_opponentHp.value - dmgDealt).coerceAtLeast(0)
             _opponentHp.value = newOpponentHp
@@ -461,7 +609,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
             if (newOpponentHp <= 0) {
                 viewModelScope.launch {
-                    delay(1200)
+                    delay(1000)
                     endMatch(won = true, reason = "Hạ gục đối thủ tuyệt đối!")
                 }
                 return
@@ -486,17 +634,17 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
             if (newPlayerHp <= 0) {
                 viewModelScope.launch {
-                    delay(1200)
+                    delay(1000)
                     endMatch(won = false, reason = "Cạn kiệt máu!")
                 }
                 return
             }
         }
 
-        // Wait brief intermission and advance
+        // Intermission and finish round
         viewModelScope.launch {
-            delay(1800)
-            advanceToNextRound()
+            delay(1600)
+            finishCurrentRound()
         }
     }
 
@@ -512,7 +660,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
             put("round", _currentRound.value)
             put("isCorrect", false)
             put("damage", 0)
-            put("elapsedMs", 10000)
+            put("elapsedMs", _timePerQuestionSec.value * 1000L)
             put("remainingHp", newPlayerHp)
         }
         duelManager.sendPacket("PLAYER_ACTION", payload)
@@ -523,12 +671,12 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         }
 
         viewModelScope.launch {
-            delay(1500)
-            advanceToNextRound()
+            delay(1400)
+            finishCurrentRound()
         }
     }
 
-    private fun advanceToNextRound() {
+    private fun finishCurrentRound() {
         roundTimerJob?.cancel()
         botActionJob?.cancel()
 
@@ -541,11 +689,47 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
             return
         }
 
-        val nextRoundNum = _currentRound.value + 1
-        if (nextRoundNum <= totalRounds) {
-            startRound(nextRoundNum)
-        } else {
-            determineMatchResult()
+        // Determine who won this round
+        val roundWon: Boolean? = when {
+            playerRoundDamageDealt > opponentRoundDamageDealt -> true
+            playerRoundDamageDealt < opponentRoundDamageDealt -> false
+            else -> null // draw
+        }
+
+        val recapMsg = when (roundWon) {
+            true -> "🎉 CHÚC MỪNG BẠN THẮNG HIỆP ${_currentRound.value}! Đòn đánh xuất sắc! ⚔️"
+            false -> "💪 ĐỪNG NẢN LÒNG! Cố gắng bứt phá ở hiệp sau nhé! 🛡️"
+            null -> "🤝 HIỆP ĐẤU HÒA ĐIỂM CÂN NÃO!"
+        }
+
+        _roundRecap.value = RoundRecapData(
+            roundNumber = _currentRound.value,
+            playerRoundWon = roundWon,
+            playerDamageDealt = playerRoundDamageDealt,
+            opponentDamageDealt = opponentRoundDamageDealt,
+            message = recapMsg
+        )
+
+        _screenState.value = DuelScreenState.ROUND_RECAP
+
+        // Play appropriate sound effect based on round result
+        when (roundWon) {
+            true -> DuelSoundEffectManager.playRoundWin(getApplication(), viewModelScope)
+            false -> DuelSoundEffectManager.playRoundLoss(getApplication(), viewModelScope)
+            null -> DuelSoundEffectManager.playRoundDraw(getApplication(), viewModelScope)
+        }
+
+        // Show round recap for 2.4s then advance or finish
+        viewModelScope.launch {
+            delay(2400)
+            if (_screenState.value == DuelScreenState.ROUND_RECAP) {
+                val nextRoundNum = _currentRound.value + 1
+                if (nextRoundNum <= _roundsPerMatch.value) {
+                    startRound(nextRoundNum)
+                } else {
+                    determineMatchResult()
+                }
+            }
         }
     }
 
@@ -563,6 +747,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
             val isBotCorrect = (1..100).random() <= difficulty.accuracyPercent
             if (isBotCorrect) {
                 val dmg = if (botDelayMs <= (minD + 1200)) (difficulty.baseDamage + 5) else difficulty.baseDamage
+                opponentRoundDamageDealt += dmg
                 val newHp = (_playerHp.value - dmg).coerceAtLeast(0)
                 _playerHp.value = newHp
                 _roundNotification.value = "⚠️ ${difficulty.botName} ra đòn sấm sét! (-$dmg HP)"
@@ -579,6 +764,33 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
     private fun handleIncomingPacket(type: String, data: JSONObject) {
         when (type) {
+            "CONFIG_SYNC" -> {
+                // Client syncs room settings from Host
+                val modeName = data.optString("mode")
+                try {
+                    val mode = DuelGameMode.valueOf(modeName)
+                    _selectedGameMode.value = mode
+                } catch (e: Exception) {
+                    // ignore
+                }
+
+                val rounds = data.optInt("roundsPerMatch", 5)
+                val qPerRound = data.optInt("questionsPerRound", 1)
+                val timeQ = data.optInt("timePerQuestion", 10)
+                val distName = data.optString("distributionMode", QuestionDistributionMode.IDENTICAL.name)
+
+                _roundsPerMatch.value = rounds
+                _questionsPerRound.value = qPerRound
+                _timePerQuestionSec.value = timeQ
+                try {
+                    _questionDistributionMode.value = QuestionDistributionMode.valueOf(distName)
+                } catch (e: Exception) {
+                    // ignore
+                }
+
+                _roundNotification.value = "📢 Chủ phòng cập nhật cài đặt: $rounds Hiệp • ${timeQ}s/câu"
+            }
+
             "MODE_CHANGE" -> {
                 val modeName = data.optString("mode")
                 try {
@@ -591,7 +803,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
             }
 
             "INIT_MATCH" -> {
-                // Client received question set and mode from host
+                // Client received question set, settings and mode from host
                 val modeName = data.optString("mode")
                 try {
                     if (modeName.isNotBlank()) {
@@ -600,6 +812,11 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
                 } catch (e: Exception) {
                     // ignore
                 }
+
+                val rounds = data.optInt("roundsPerMatch", 5)
+                val timeQ = data.optInt("timePerQuestion", 10)
+                _roundsPerMatch.value = rounds
+                _timePerQuestionSec.value = timeQ
 
                 val questionsArray = data.optJSONArray("questions") ?: JSONArray()
                 val list = mutableListOf<DuelQuestion>()
@@ -612,7 +829,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
                     }
                     val qModeStr = qObj.optString("mode", _selectedGameMode.value.name)
                     val qMode = try { DuelGameMode.valueOf(qModeStr) } catch (e: Exception) { _selectedGameMode.value }
-                    
+
                     val promptQ = qObj.optString("promptQuestion").ifBlank { qObj.optString("word") }
                     val promptSub = qObj.optString("promptSubtitle").ifBlank { qObj.optString("phonetics") }
                     val correctAns = qObj.optString("correctAnswer").ifBlank { qObj.optString("meaning") }
@@ -641,6 +858,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
                 _opponentHp.value = oppRemainingHp
 
                 if (isCorrect) {
+                    opponentRoundDamageDealt += damage
                     val newMyHp = (_playerHp.value - damage).coerceAtLeast(0)
                     _playerHp.value = newMyHp
                     _roundNotification.value = "⚔️ Đối thủ vừa ra đòn trúng! (-$damage HP)"
@@ -707,15 +925,22 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         botActionJob?.cancel()
 
         _isWinner.value = won
-        _finalScoreTitle.value = if (won) "🏆 CHIẾN THẮNG TUYỆT ĐỐI" else "💀 BẠN ĐÃ THUA TRẬN"
+        _finalScoreTitle.value = if (won) "🏆 CHIẾN THẮNG CHUNG CUỘC!" else "💀 BẠN ĐÃ THUA TRẬN CHUNG CUỘC"
         _roundNotification.value = reason
 
-        val xp = if (won) 100 else 40
-        val coins = if (won) 30 else 10
+        val xp = if (won) 150 else 50
+        val coins = if (won) 50 else 15
         _earnedXp.value = xp
         _earnedCoins.value = coins
 
         _screenState.value = DuelScreenState.MATCH_OVER
+
+        // Play champion fanfare or defeat sound
+        if (won) {
+            DuelSoundEffectManager.playMatchChampion(getApplication(), viewModelScope)
+        } else {
+            DuelSoundEffectManager.playMatchDefeat(getApplication(), viewModelScope)
+        }
 
         // Reward user in Room database
         viewModelScope.launch {
@@ -727,6 +952,10 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
                 )
             )
         }
+    }
+
+    fun triggerFireworkSound() {
+        DuelSoundEffectManager.playFireworkPop(viewModelScope)
     }
 
     private fun triggerVibrate(durationMs: Long) {
@@ -755,8 +984,12 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         return shuffled.joinToString(" ")
     }
 
-    private fun generateDuelQuestions(count: Int, rootMode: DuelGameMode): List<DuelQuestion> {
-        val pool = _words.value.ifEmpty { getDefaultWordPool() }
+    private fun generateDuelQuestions(
+        count: Int,
+        rootMode: DuelGameMode,
+        customPool: List<Word>? = null
+    ): List<DuelQuestion> {
+        val pool = customPool ?: (_words.value.ifEmpty { getDefaultWordPool() })
         val effectivePool = if (pool.size < 6) getDefaultWordPool() else pool
         val shuffledWords = effectivePool.shuffled().take(count)
 
@@ -841,7 +1074,6 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
                 }
 
                 DuelGameMode.RANDOM_CHAOS -> {
-                    // Handled above
                     DuelQuestion(
                         id = word.id,
                         mode = DuelGameMode.FAST_CHOICE,
