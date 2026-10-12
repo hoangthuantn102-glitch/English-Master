@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -29,7 +30,9 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -866,6 +869,9 @@ private fun DuelWaitingScreen(
     val timePerQuestionSec by viewModel.timePerQuestionSec.collectAsStateWithLifecycle()
     val questionDistributionMode by viewModel.questionDistributionMode.collectAsStateWithLifecycle()
 
+    var questionsInput by remember(questionsPerRound) { mutableStateOf(questionsPerRound.toString()) }
+    var timeInput by remember(timePerQuestionSec) { mutableStateOf(timePerQuestionSec.toString()) }
+
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 0.92f,
@@ -1155,18 +1161,65 @@ private fun DuelWaitingScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        listOf(1, 2, 3).forEach { q ->
+                        listOf(1, 2, 3, 5, 10).forEach { q ->
                             val sel = q == questionsPerRound
                             FilterChip(
                                 selected = sel,
-                                onClick = { viewModel.setQuestionsPerRound(q) },
+                                onClick = {
+                                    viewModel.setQuestionsPerRound(q)
+                                    questionsInput = q.toString()
+                                },
                                 label = { Text("$q câu", fontSize = 11.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal) }
                             )
                         }
                     }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = questionsInput,
+                            onValueChange = { input ->
+                                val clean = input.filter { it.isDigit() }.take(2)
+                                questionsInput = clean
+                                clean.toIntOrNull()?.let { num ->
+                                    if (num in 1..50) {
+                                        viewModel.setQuestionsPerRound(num)
+                                    }
+                                }
+                            },
+                            label = { Text("Tùy chỉnh số câu (1 - 50)", fontSize = 10.sp) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                            textStyle = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        )
+                        FilledTonalIconButton(
+                            onClick = {
+                                val next = (questionsPerRound - 1).coerceAtLeast(1)
+                                viewModel.setQuestionsPerRound(next)
+                                questionsInput = next.toString()
+                            },
+                            enabled = questionsPerRound > 1
+                        ) {
+                            Text("➖", fontSize = 14.sp)
+                        }
+                        FilledTonalIconButton(
+                            onClick = {
+                                val next = (questionsPerRound + 1).coerceAtMost(50)
+                                viewModel.setQuestionsPerRound(next)
+                                questionsInput = next.toString()
+                            },
+                            enabled = questionsPerRound < 50
+                        ) {
+                            Text("➕", fontSize = 14.sp)
+                        }
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 // 3. Thời gian cho mỗi câu
                 Text(
@@ -1180,13 +1233,60 @@ private fun DuelWaitingScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        listOf(8, 10, 15, 20).forEach { sec ->
+                        listOf(5, 8, 10, 15, 20, 30).forEach { sec ->
                             val sel = sec == timePerQuestionSec
                             FilterChip(
                                 selected = sel,
-                                onClick = { viewModel.setTimePerQuestion(sec) },
+                                onClick = {
+                                    viewModel.setTimePerQuestion(sec)
+                                    timeInput = sec.toString()
+                                },
                                 label = { Text("${sec}s", fontSize = 11.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal) }
                             )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = timeInput,
+                            onValueChange = { input ->
+                                val clean = input.filter { it.isDigit() }.take(3)
+                                timeInput = clean
+                                clean.toIntOrNull()?.let { sec ->
+                                    if (sec in 3..120) {
+                                        viewModel.setTimePerQuestion(sec)
+                                    }
+                                }
+                            },
+                            label = { Text("Tùy chỉnh số giây (3 - 120s)", fontSize = 10.sp) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f),
+                            textStyle = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        )
+                        FilledTonalIconButton(
+                            onClick = {
+                                val next = (timePerQuestionSec - 1).coerceAtLeast(3)
+                                viewModel.setTimePerQuestion(next)
+                                timeInput = next.toString()
+                            },
+                            enabled = timePerQuestionSec > 3
+                        ) {
+                            Text("➖", fontSize = 14.sp)
+                        }
+                        FilledTonalIconButton(
+                            onClick = {
+                                val next = (timePerQuestionSec + 1).coerceAtMost(120)
+                                viewModel.setTimePerQuestion(next)
+                                timeInput = next.toString()
+                            },
+                            enabled = timePerQuestionSec < 120
+                        ) {
+                            Text("➕", fontSize = 14.sp)
                         }
                     }
                 }
@@ -1251,9 +1351,9 @@ private fun DuelWaitingScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE91E63))
             ) {
                 Text(
-                    text = "BẮT ĐẦU TRẬN ĐẤU ⚔️ ($roundsPerMatch HIỆP • ${timePerQuestionSec}S)",
+                    text = "BẮT ĐẦU TRẬN ĐẤU ⚔️ ($roundsPerMatch HIỆP • $questionsPerRound CÂU • ${timePerQuestionSec}S)",
                     fontWeight = FontWeight.Black,
-                    fontSize = 15.sp
+                    fontSize = 14.sp
                 )
             }
             Spacer(modifier = Modifier.height(12.dp))
@@ -1358,6 +1458,8 @@ private fun DuelBattleScreen(viewModel: BluetoothDuelViewModel) {
     val playerHp by viewModel.playerHp.collectAsStateWithLifecycle()
     val opponentHp by viewModel.opponentHp.collectAsStateWithLifecycle()
     val currentRound by viewModel.currentRound.collectAsStateWithLifecycle()
+    val currentQuestionInRound by viewModel.currentQuestionInRound.collectAsStateWithLifecycle()
+    val questionsPerRound by viewModel.questionsPerRound.collectAsStateWithLifecycle()
     val currentQuestion by viewModel.currentQuestion.collectAsStateWithLifecycle()
     val selectedOption by viewModel.selectedOption.collectAsStateWithLifecycle()
     val hasAnswered by viewModel.hasAnsweredCurrentRound.collectAsStateWithLifecycle()
@@ -1385,8 +1487,13 @@ private fun DuelBattleScreen(viewModel: BluetoothDuelViewModel) {
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val totalRounds = viewModel.totalRounds
+                        val roundLabel = if (questionsPerRound > 1) {
+                            "HIỆP $currentRound/$totalRounds • CÂU $currentQuestionInRound/$questionsPerRound"
+                        } else {
+                            "HIỆP $currentRound/$totalRounds"
+                        }
                         Text(
-                            text = "HIỆP $currentRound/$totalRounds",
+                            text = roundLabel,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Black,
                             color = MaterialTheme.colorScheme.primary

@@ -242,6 +242,9 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
     private val _currentRound = MutableStateFlow(1)
     val currentRound = _currentRound.asStateFlow()
 
+    private val _currentQuestionInRound = MutableStateFlow(1)
+    val currentQuestionInRound = _currentQuestionInRound.asStateFlow()
+
     val totalRounds: Int get() = _roundsPerMatch.value
 
     private val _roundQuestions = MutableStateFlow<List<DuelQuestion>>(emptyList())
@@ -348,12 +351,12 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
     }
 
     fun setQuestionsPerRound(qCount: Int) {
-        _questionsPerRound.value = qCount.coerceIn(1, 5)
+        _questionsPerRound.value = qCount.coerceIn(1, 50)
         syncSettingsToOpponent()
     }
 
     fun setTimePerQuestion(seconds: Int) {
-        _timePerQuestionSec.value = seconds.coerceIn(5, 30)
+        _timePerQuestionSec.value = seconds.coerceIn(3, 120)
         syncSettingsToOpponent()
     }
 
@@ -449,24 +452,33 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
     private fun startCountdownAndMatch() {
         val targetMode = _selectedGameMode.value
         val rounds = _roundsPerMatch.value
+        val qPerRound = _questionsPerRound.value
+        val totalQuestionsNeeded = rounds * qPerRound
         val distMode = _questionDistributionMode.value
 
         val pool = _words.value.ifEmpty { getDefaultWordPool() }
         val effectivePool = if (pool.size < 6) getDefaultWordPool() else pool
 
-        val hostQuestions = generateDuelQuestions(rounds, targetMode, effectivePool)
+        val hostQuestions = generateDuelQuestions(totalQuestionsNeeded, targetMode, effectivePool)
         _roundQuestions.value = hostQuestions
 
         // Send INIT_MATCH packet to client if connected over Bluetooth / Wi-Fi
         if (duelManager.connectionStatus.value == ConnectionStatus.CONNECTED) {
             val clientQuestions = when (distMode) {
                 QuestionDistributionMode.IDENTICAL -> hostQuestions
-                QuestionDistributionMode.SHUFFLED -> hostQuestions.shuffled()
+                QuestionDistributionMode.SHUFFLED -> {
+                    val list = mutableListOf<DuelQuestion>()
+                    for (r in 0 until rounds) {
+                        val roundChunk = hostQuestions.drop(r * qPerRound).take(qPerRound)
+                        list.addAll(roundChunk.shuffled())
+                    }
+                    list
+                }
                 QuestionDistributionMode.DIFFERENT_EQUAL -> {
                     // Equivalent difficulty: separate distinct words from same pool
                     val remainingPool = effectivePool.filterNot { w -> hostQuestions.any { it.id == w.id } }
-                    val altPool = if (remainingPool.size >= rounds) remainingPool else effectivePool.shuffled()
-                    generateDuelQuestions(rounds, targetMode, altPool)
+                    val altPool = if (remainingPool.size >= totalQuestionsNeeded) remainingPool else effectivePool.shuffled()
+                    generateDuelQuestions(totalQuestionsNeeded, targetMode, altPool)
                 }
             }
 
@@ -488,7 +500,9 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
             val payload = JSONObject().apply {
                 put("mode", targetMode.name)
                 put("roundsPerMatch", rounds)
+                put("questionsPerRound", qPerRound)
                 put("timePerQuestion", _timePerQuestionSec.value)
+                put("distributionMode", distMode.name)
                 put("questions", questionsArray)
             }
             duelManager.sendPacket("INIT_MATCH", payload)
@@ -502,6 +516,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         _playerHp.value = 100
         _opponentHp.value = 100
         _currentRound.value = 1
+        _currentQuestionInRound.value = 1
         _roundNotification.value = ""
         _roundRecap.value = null
         playerRoundDamageDealt = 0
@@ -522,16 +537,22 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
     private fun startRound(roundNum: Int) {
         _currentRound.value = roundNum
-        _selectedOption.value = null
-        _hasAnsweredCurrentRound.value = false
-        _roundNotification.value = ""
+        _currentQuestionInRound.value = 1
         playerRoundDamageDealt = 0
         opponentRoundDamageDealt = 0
+        loadQuestionForCurrentRound()
+    }
 
+    private fun loadQuestionForCurrentRound() {
+        val qIndex = (_currentRound.value - 1) * _questionsPerRound.value + (_currentQuestionInRound.value - 1)
         val questions = _roundQuestions.value
-        if (roundNum <= questions.size) {
-            val q = questions[roundNum - 1]
+
+        if (qIndex < questions.size) {
+            val q = questions[qIndex]
             _currentQuestion.value = q
+            _selectedOption.value = null
+            _hasAnsweredCurrentRound.value = false
+            _roundNotification.value = ""
             _screenState.value = DuelScreenState.BATTLE
             roundStartTimeMs = System.currentTimeMillis()
 
@@ -542,7 +563,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
                 scheduleBotAction()
             }
         } else {
-            // All rounds completed!
+            // All rounds/questions completed!
             determineMatchResult()
         }
     }
@@ -559,7 +580,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
             }
             _roundTimeRemaining.value = 0
 
-            // Time expired for this round!
+            // Time expired for this question!
             if (!_hasAnsweredCurrentRound.value) {
                 handleTimeout()
             }
@@ -600,6 +621,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
             // Broadcast action to opponent
             val payload = JSONObject().apply {
                 put("round", _currentRound.value)
+                put("questionIndex", _currentQuestionInRound.value)
                 put("isCorrect", true)
                 put("damage", dmgDealt)
                 put("elapsedMs", elapsedMs)
@@ -625,6 +647,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
             val payload = JSONObject().apply {
                 put("round", _currentRound.value)
+                put("questionIndex", _currentQuestionInRound.value)
                 put("isCorrect", false)
                 put("damage", 0)
                 put("elapsedMs", elapsedMs)
@@ -641,10 +664,10 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
             }
         }
 
-        // Intermission and finish round
+        // Intermission and progress to next question or end round
         viewModelScope.launch {
-            delay(1600)
-            finishCurrentRound()
+            delay(1500)
+            proceedAfterQuestion()
         }
     }
 
@@ -658,6 +681,7 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
         val payload = JSONObject().apply {
             put("round", _currentRound.value)
+            put("questionIndex", _currentQuestionInRound.value)
             put("isCorrect", false)
             put("damage", 0)
             put("elapsedMs", _timePerQuestionSec.value * 1000L)
@@ -671,7 +695,30 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
         }
 
         viewModelScope.launch {
-            delay(1400)
+            delay(1300)
+            proceedAfterQuestion()
+        }
+    }
+
+    private fun proceedAfterQuestion() {
+        roundTimerJob?.cancel()
+        botActionJob?.cancel()
+
+        if (_playerHp.value <= 0) {
+            endMatch(won = false, reason = "Hết máu!")
+            return
+        }
+        if (_opponentHp.value <= 0) {
+            endMatch(won = true, reason = "Đối thủ đã hết máu!")
+            return
+        }
+
+        // Check if there are more questions in this round
+        if (_currentQuestionInRound.value < _questionsPerRound.value) {
+            _currentQuestionInRound.value += 1
+            loadQuestionForCurrentRound()
+        } else {
+            // All questions in this round are finished -> Recap & Next round
             finishCurrentRound()
         }
     }
@@ -814,8 +861,10 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
                 }
 
                 val rounds = data.optInt("roundsPerMatch", 5)
+                val qPerRound = data.optInt("questionsPerRound", 1)
                 val timeQ = data.optInt("timePerQuestion", 10)
                 _roundsPerMatch.value = rounds
+                _questionsPerRound.value = qPerRound
                 _timePerQuestionSec.value = timeQ
 
                 val questionsArray = data.optJSONArray("questions") ?: JSONArray()
@@ -991,7 +1040,15 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
     ): List<DuelQuestion> {
         val pool = customPool ?: (_words.value.ifEmpty { getDefaultWordPool() })
         val effectivePool = if (pool.size < 6) getDefaultWordPool() else pool
-        val shuffledWords = effectivePool.shuffled().take(count)
+        val shuffledWords = if (effectivePool.size >= count) {
+            effectivePool.shuffled().take(count)
+        } else {
+            val list = mutableListOf<Word>()
+            while (list.size < count) {
+                list.addAll(effectivePool.shuffled())
+            }
+            list.take(count)
+        }
 
         val concreteModes = listOf(
             DuelGameMode.FAST_CHOICE,
@@ -1089,14 +1146,38 @@ class BluetoothDuelViewModel(application: Application) : AndroidViewModel(applic
 
     private fun getDefaultWordPool(): List<Word> {
         return listOf(
-            Word(1, "Resilient", "Kiên cường, bền bỉ", "/rɪˈzɪl.jənt/", "She is a resilient girl.", "Cô ấy là một cô gái kiên cường.", "Từ vựng tính cách"),
-            Word(2, "Collaborate", "Hợp tác, cộng tác", "/kəˈlæb.ə.reɪt/", "We need to collaborate together.", "Chúng ta cần hợp tác cùng nhau.", "Từ vựng công việc"),
-            Word(3, "Innovative", "Sáng tạo, đổi mới", "/ˈɪn.ə.veɪ.tɪv/", "An innovative idea for learning.", "Một ý tưởng đổi mới trong học tập.", "Từ vựng công nghệ"),
-            Word(4, "Perseverance", "Sự kiên trì, bền chí", "/ˌpɜː.sɪˈvɪə.rəns/", "Perseverance leads to success.", "Kiên trì dẫn đến thành công.", "Từ vựng phẩm chất"),
-            Word(5, "Triumph", "Chiến thắng vẻ vang", "/ˈtraɪ.əmf/", "They celebrated their triumph.", "Họ ăn mừng chiến thắng vẻ vang.", "Từ vựng chiến thắng"),
-            Word(6, "Eloquent", "Hùng biện, lưu loát", "/ˈel.ə.kwənt/", "An eloquent speaker.", "Một diễn giả lưu loát hùng hồn.", "Từ vựng giao tiếp"),
-            Word(7, "Courageous", "Dũng cảm, can đảm", "/kəˈreɪ.dʒəs/", "A courageous action in battle.", "Hành động dũng cảm trong trận đấu.", "Từ vựng dũng khí"),
-            Word(8, "Brilliant", "Xuất sắc, lỗi lạc", "/ˈbrɪl.jənt/", "A brilliant young student.", "Một học sinh trẻ tuổi xuất sắc.", "Từ vựng học tập")
+            Word(1, "Resilient", "Kiên cường, bền bỉ", "/rɪˈzɪl.jənt/", "She is a resilient girl.", "Cô ấy là một cô gái kiên cường.", "Phẩm chất"),
+            Word(2, "Collaborate", "Hợp tác, cộng tác", "/kəˈlæb.ə.reɪt/", "We need to collaborate together.", "Chúng ta cần hợp tác cùng nhau.", "Công việc"),
+            Word(3, "Innovative", "Sáng tạo, đổi mới", "/ˈɪn.ə.veɪ.tɪv/", "An innovative idea for learning.", "Một ý tưởng đổi mới trong học tập.", "Công nghệ"),
+            Word(4, "Perseverance", "Sự kiên trì, bền chí", "/ˌpɜː.sɪˈvɪə.rəns/", "Perseverance leads to success.", "Kiên trì dẫn đến thành công.", "Phẩm chất"),
+            Word(5, "Triumph", "Chiến thắng vẻ vang", "/ˈtraɪ.əmf/", "They celebrated their triumph.", "Họ ăn mừng chiến thắng vẻ vang.", "Chiến thắng"),
+            Word(6, "Eloquent", "Hùng biện, lưu loát", "/ˈel.ə.kwənt/", "An eloquent speaker.", "Một diễn giả lưu loát hùng hồn.", "Giao tiếp"),
+            Word(7, "Courageous", "Dũng cảm, can đảm", "/kəˈreɪ.dʒəs/", "A courageous action in battle.", "Hành động dũng cảm trong trận đấu.", "Dũng khí"),
+            Word(8, "Brilliant", "Xuất sắc, lỗi lạc", "/ˈbrɪl.jənt/", "A brilliant young student.", "Một học sinh trẻ tuổi xuất sắc.", "Học tập"),
+            Word(9, "Diligent", "Chăm chỉ, cần cù", "/ˈdɪl.ɪ.dʒənt/", "Diligent work brings great rewards.", "Làm việc chăm chỉ mang lại phần thưởng lớn.", "Phẩm chất"),
+            Word(10, "Compassion", "Lòng trắc ẩn, nhân ái", "/kəmˈpæʃ.ən/", "Show compassion to everyone.", "Hãy thể hiện lòng nhân ái với mọi người.", "Đạo đức"),
+            Word(11, "Wisdom", "Trí tuệ, sự khôn ngoan", "/ˈwɪz.dəm/", "Ancient words of wisdom.", "Những lời khuyên thông thái từ xưa.", "Trí tuệ"),
+            Word(12, "Integrity", "Sự chính trực, liêm chính", "/ɪnˈteɡ.rə.ti/", "A person of high integrity.", "Một người có phẩm giá và chính trực cao.", "Đạo đức"),
+            Word(13, "Ambition", "Hoài bão, khát vọng", "/æmˈbɪʃ.ən/", "She has great ambition.", "Cô ấy có hoài bão lớn lao.", "Khát vọng"),
+            Word(14, "Gratitude", "Lòng biết ơn", "/ˈɡræt.ɪ.tʃuːd/", "Express gratitude every day.", "Hãy bày tỏ lòng biết ơn mỗi ngày.", "Cảm xúc"),
+            Word(15, "Harmony", "Sự hài hòa, hòa thuận", "/ˈhɑː.mə.ni/", "Living in peace and harmony.", "Sống trong hòa bình và hòa thuận.", "Cuộc sống"),
+            Word(16, "Optimistic", "Lạc quan, tin tưởng", "/ˌɒp.tɪˈmɪs.tɪk/", "Stay optimistic about the future.", "Hãy luôn lạc quan về tương lai.", "Tính cách"),
+            Word(17, "Patience", "Lòng kiên nhẫn, kiên trì", "/ˈpeɪ.ʃəns/", "Patience is a virtue.", "Kiên nhẫn là một đức tính tốt.", "Phẩm chất"),
+            Word(18, "Empathy", "Sự thấu cảm, cảm thông", "/ˈem.pə.θi/", "He listened with empathy.", "Anh ấy lắng nghe bằng sự thấu cảm sâu sắc.", "Tâm lý"),
+            Word(19, "Tenacity", "Tính kiên định, dẻo dai", "/təˈnæs.ə.ti/", "His tenacity won the race.", "Tính bền bỉ đã giúp anh ấy chiến thắng cuộc đua.", "Ý chí"),
+            Word(20, "Serenity", "Sự thanh thản, an yên", "/səˈren.ə.ti/", "A morning of calm serenity.", "Một buổi sáng bình yên và thanh thản.", "Tâm trạng"),
+            Word(21, "Adaptable", "Linh hoạt, thích nghi tốt", "/əˈdæp.tə.bəl/", "Adaptable in all situations.", "Linh hoạt thích ứng trong mọi hoàn cảnh.", "Kỹ năng"),
+            Word(22, "Dynamic", "Năng động, giàu năng lượng", "/daɪˈnæm.ɪk/", "A dynamic atmosphere in the arena.", "Bầu không khí năng động trên đấu trường.", "Năng lượng"),
+            Word(23, "Authentic", "Chân thật, đích thực", "/ɔːˈθen.tɪk/", "True and authentic values.", "Những giá trị chân thực và đích thực.", "Giá trị"),
+            Word(24, "Dedicated", "Tận tâm, cống hiến", "/ˈded.ɪ.keɪ.tɪd/", "A dedicated mentor and guide.", "Một người thầy tận tâm và nhiệt huyết.", "Cống hiến"),
+            Word(25, "Generous", "Hào phóng, rộng lượng", "/ˈdʒen.ər.əs/", "He gave a generous gift.", "Anh ấy tặng một món quà hào phóng.", "Tính cách"),
+            Word(26, "Humble", "Khiêm tốn, nhún nhường", "/ˈhʌm.bəl/", "A humble winner.", "Một người chiến thắng khiêm tốn.", "Phẩm chất"),
+            Word(27, "Inspiring", "Truyền cảm hứng mạnh mẽ", "/ɪnˈspaɪə.rɪŋ/", "An inspiring speech to victory.", "Một bài phát biểu truyền cảm hứng tiến tới chiến thắng.", "Cảm hứng"),
+            Word(28, "Passionate", "Đam mê, nhiệt huyết", "/ˈpæʃ.ən.ət/", "Passionate about knowledge.", "Đam mê học hỏi và tích lũy tri thức.", "Khát khao"),
+            Word(29, "Resourceful", "Tháo vát, nhanh trí", "/rɪˈzɔː.sfəl/", "Resourceful in solving puzzles.", "Tháo vát và nhanh trí trong xử lý vấn đề.", "Tư duy"),
+            Word(30, "Sincere", "Chân thành, thành thật", "/sɪnˈsɪər/", "A sincere apology and respect.", "Lời xin lỗi chân thành và sự tôn trọng.", "Cảm xúc"),
+            Word(31, "Visionary", "Tầm nhìn xa trông rộng", "/ˈvɪʒ.ən.ri/", "A visionary leader for tomorrow.", "Một nhà lãnh đạo có tầm nhìn cho tương lai.", "Tầm nhìn"),
+            Word(32, "Zealous", "Nhiệt huyết, sốt sắng", "/ˈzel.əs/", "Zealous defender of the realm.", "Người bảo vệ nhiệt huyết của vương quốc.", "Dũng khí")
         )
     }
 
